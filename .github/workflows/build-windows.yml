@@ -1,4 +1,4 @@
-name: Build Windows
+name: Build and Release Windows
 
 on:
   push:
@@ -7,12 +7,24 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: pantallas-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
+      - name: Esperar cambios consecutivos
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: Start-Sleep -Seconds 20
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -28,21 +40,53 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
+          choco install innosetup -y --no-progress
+
+      - name: Inyectar identificador de build
+        shell: pwsh
+        run: |
+          @"
+          BUILD_ID = ${{ github.run_number }}
+          BUILD_COMMIT = "${{ github.sha }}"
+          "@ | Set-Content -Encoding UTF8 pantallas/build_info.py
 
       - name: Smoke test de imports
         shell: pwsh
         run: |
           python -m compileall -q app.py pantallas
-          python -c "import pantallas.windows_api; import pantallas.rules; import pantallas.main_window; print('imports OK')"
+          python -c "import pantallas.windows_api; import pantallas.rules; import pantallas.update_service; import pantallas.main_window; print('imports OK')"
 
       - name: Construir Pantallas.exe
         shell: pwsh
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed --name Pantallas app.py
 
-      - name: Publicar artefacto
+      - name: Construir instalador
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.2.0.${{ github.run_number }}" installer\Pantallas.iss
+
+      - name: Generar SHA-256
+        shell: pwsh
+        run: |
+          $file = "installer_output\PantallasSetup.exe"
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          "$hash  PantallasSetup.exe" | Set-Content -NoNewline -Encoding ascii "installer_output\PantallasSetup.exe.sha256"
+
+      - name: Publicar artefacto de CI
         uses: actions/upload-artifact@v4
         with:
-          name: Pantallas-Windows
-          path: dist/Pantallas.exe
+          name: Pantallas-Windows-build-${{ github.run_number }}
+          path: |
+            installer_output/PantallasSetup.exe
+            installer_output/PantallasSetup.exe.sha256
           if-no-files-found: error
+
+      - name: Publicar actualización
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "build-${{ github.run_number }}"
+          gh release create $tag "installer_output/PantallasSetup.exe" "installer_output/PantallasSetup.exe.sha256" --repo "${{ github.repository }}" --title "Pantallas build ${{ github.run_number }}" --notes "Actualización automática de Pantallas. Commit ${{ github.sha }}."
