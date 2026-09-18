@@ -133,7 +133,7 @@ def enum_monitors() -> list[MonitorInfo]:
 
 
 def apply_monitor_layout(layout: Iterable[dict[str, int | str]]) -> tuple[bool, str]:
-    """Apply monitor x/y/orientation atomically-ish using CDS_NORESET then one final reset."""
+    """Apply monitor x/y/orientation with CDS_NORESET then commit all at once."""
     staged: list[str] = []
     try:
         for item in layout:
@@ -159,17 +159,18 @@ def apply_monitor_layout(layout: Iterable[dict[str, int | str]]) -> tuple[bool, 
                 devmode.DisplayOrientation = target_orientation
                 devmode.Fields |= _DM_DISPLAYORIENTATION | _DM_PELSWIDTH | _DM_PELSHEIGHT
 
+            # pywin32 exposes the 3-argument wrapper: DeviceName, DevMode, Flags.
             result = win32api.ChangeDisplaySettingsEx(
                 device,
                 devmode,
-                0,
                 _CDS_UPDATEREGISTRY | _CDS_NORESET,
             )
             if result != win32con.DISP_CHANGE_SUCCESSFUL:
                 return False, f"Windows rechazó {device} (código {result})."
             staged.append(device)
 
-        result = win32api.ChangeDisplaySettingsEx(None, None, 0, 0)
+        # Passing a NULL DEVMODE commits all staged CDS_NORESET changes.
+        result = win32api.ChangeDisplaySettingsEx(None, None, 0)
         if result != win32con.DISP_CHANGE_SUCCESSFUL:
             return False, f"No se pudo aplicar la distribución final (código {result})."
         return True, f"Distribución aplicada en {len(staged)} pantalla(s)."
