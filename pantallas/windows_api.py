@@ -389,6 +389,7 @@ def disable_monitor(
         method = preferred_method if preferred_method in {"windows", "ddc"} else "ddc"
         methods = [method, "windows" if method == "ddc" else "ddc"]
         errors: list[str] = []
+        failed_methods: list[str] = []
 
         for candidate in methods:
             if candidate == "ddc":
@@ -396,7 +397,9 @@ def disable_monitor(
                 if ok:
                     profile["mode"] = mode
                     profile["power_method"] = "ddc"
+                    profile["failed_methods"] = failed_methods
                     return True, f"{profile['name']} fue apagado. {detail}", profile
+                failed_methods.append("ddc")
                 errors.append(f"DDC/CI: {detail}")
                 continue
 
@@ -404,7 +407,9 @@ def disable_monitor(
             if ok:
                 profile["mode"] = "windows_disabled"
                 profile["power_method"] = "windows"
+                profile["failed_methods"] = failed_methods
                 return True, f"{profile['name']} fue apagado. {detail}", profile
+            failed_methods.append("windows")
             errors.append(f"Windows: {detail}")
 
         return (
