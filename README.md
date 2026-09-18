@@ -2,17 +2,20 @@
 
 **Pantallas** es una aplicación de escritorio para Windows, escrita en Python, para visualizar y organizar monitores y mantener aplicaciones fijadas a una zona concreta de una pantalla.
 
-## V0.5
+## V0.6
 
 - Detecta todos los monitores activos.
 - Muestra resolución, orientación, coordenadas y monitor principal.
-- La sección **Monitores** integra ahora dos vistas: **Control** y **Distribución**.
+- La sección **Monitores** integra dos vistas: **Control** y **Distribución**.
+- La vista Control muestra también un mapa visible de la distribución actual.
+- Los monitores pueden reordenarse manualmente con **Subir** y **Bajar**; el orden se guarda y se reutiliza en menús y selectores.
 - Permite arrastrar los monitores en un lienzo y aplicar esa distribución a Windows.
 - Permite asignar nombres personalizados a los monitores; esos nombres se usan también en la bandeja y en la interfaz.
 - Permite cambiar entre orientación horizontal, vertical, horizontal invertida y vertical invertida.
 - Control de brillo independiente mediante DDC/CI cuando el monitor lo soporta.
 - El apagado individual verifica si Windows realmente desactivó la salida. Si el controlador la deja activa, Pantallas usa el comando físico DDC/CI como respaldo y guarda el método utilizado para poder encenderla después.
-- Pantallas nunca permite apagar la última pantalla activa.
+- Por defecto Pantallas nunca permite apagar la última pantalla activa y muestra un aviso al intentarlo.
+- En Configuración se puede permitir apagar todos los monitores, con una advertencia explícita antes de desactivar la protección.
 - Si se apaga la pantalla donde está abierta la aplicación, Pantallas se mueve antes a otra pantalla activa.
 - Las pantallas apagadas quedan disponibles para volver a encenderlas desde la aplicación o desde la bandeja.
 - Lista las ventanas abiertas y detecta en qué monitor están.
@@ -89,8 +92,13 @@ Cada push nuevo a `main` genera un nuevo build publicable. La aplicación consul
 
 ## Notas sobre encendido y apagado
 
-En V0.5 Pantallas prueba primero a retirar la salida del escritorio de Windows y comprueba el resultado. Si el controlador informa éxito pero el monitor sigue activo, restaura la señal normal y usa DDC/CI para apagar físicamente el panel. El método usado queda guardado junto con resolución, posición y orientación.
+En V0.6 Pantallas prueba primero a retirar la salida del escritorio de Windows y comprueba el resultado. Si el controlador informa éxito pero el monitor sigue activo, restaura la señal normal y usa DDC/CI para apagar físicamente el panel. El método usado queda guardado junto con resolución, posición y orientación.
 
-Al volver a encender un monitor apagado por DDC/CI, Pantallas intenta primero el comando de energía, luego fuerza un despertar de pantallas desde Windows y vuelve a adquirir un handle DDC/CI nuevo. Esto mejora la compatibilidad con monitores que dejan de responder durante el reposo.
+Al volver a encender un monitor apagado por DDC/CI, Pantallas restaura primero la señal de Windows, fuerza un despertar, vuelve a adquirir handles DDC/CI nuevos y reintenta varias veces. Los nuevos apagados DDC usan standby (0x02) antes que deep-off (0x04) para conservar la capacidad de despertar. Los monitores guardados por versiones anteriores en deep-off reciben además una renegociación HDMI/DisplayPort. Esto mejora la compatibilidad con monitores que dejan de responder durante el reposo.
 
 El control de **brillo** sigue usando DDC/CI.
+
+
+## Recuperación de brillo
+
+Pantallas guarda el último brillo válido de cada monitor. Si DDC/CI tarda en volver después de encender una pantalla, la interfaz conserva ese valor en lugar de mostrar 0 o N/D y refresca el monitor varias veces hasta que el canal de control vuelve a responder.
