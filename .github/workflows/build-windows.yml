@@ -95,7 +95,7 @@ jobs:
           "$hash  PantallasSetup.exe" | Set-Content -NoNewline -Encoding ascii "installer_output\PantallasSetup.exe.sha256"
 
       - name: Publicar artefacto de CI
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Pantallas-Windows-build-${{ github.run_number }}
           path: |
