@@ -265,6 +265,33 @@ def _wake_windows_displays() -> None:
         pass
 
 
+def _pulse_monitor_signal(profile: dict) -> None:
+    """Briefly remove and restore a display mode to force HDMI/DP retraining."""
+    device = str(profile.get("device", ""))
+    if not device:
+        return
+    try:
+        current = win32api.EnumDisplaySettings(
+            device,
+            win32con.ENUM_CURRENT_SETTINGS,
+        )
+        current.Position_x = 0
+        current.Position_y = 0
+        current.PelsWidth = 0
+        current.PelsHeight = 0
+        current.Fields = _DM_POSITION | _DM_PELSWIDTH | _DM_PELSHEIGHT
+        win32api.ChangeDisplaySettingsEx(
+            device,
+            current,
+            _CDS_UPDATEREGISTRY,
+        )
+        time.sleep(0.45)
+    except Exception:
+        pass
+    _restore_monitor_profile(profile)
+    _wake_windows_displays()
+
+
 def disable_monitor(device: str, *, allow_last: bool = False) -> tuple[bool, str, dict | None]:
     active = enum_monitors()
     monitor = next((m for m in active if m.device == device), None)
@@ -397,16 +424,19 @@ def enable_monitor(profile: dict) -> tuple[bool, str]:
             if power_ok or responsive:
                 return True, f"{name} fue encendido nuevamente."
 
-            # One final mode pulse can retrain DP/HDMI after a deep DDC off.
-            ok, _message = _restore_monitor_profile(profile)
-            if ok:
-                _wake_windows_displays()
-                time.sleep(1.0)
+            # Deep-off from older builds may require a real link retrain.
+            _pulse_monitor_signal(profile)
+            for _ in range(5):
+                time.sleep(0.75)
                 monitor = next((m for m in enum_monitors() if m.device == device), None)
                 if monitor is not None:
                     if set_monitor_power_value(monitor.handle, 0x01):
                         _restore_saved_brightness(profile, monitor)
                         return True, f"{name} fue encendido nuevamente."
+                    if get_monitor_brightness(monitor.handle) is not None:
+                        _restore_saved_brightness(profile, monitor)
+                        return True, f"{name} volvió a responder y quedó encendido."
+                _wake_windows_displays()
 
             return (
                 False,
