@@ -22,7 +22,9 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .build_info import BUILD_ID
+from .brightness_cache import set_cached_brightness
 from .monitor_aliases import display_name_for_device, monitor_display_name
+from .monitor_order import sort_monitors
 from .monitor_state import (
     load_disabled_monitors,
     reconcile_active_devices,
@@ -280,18 +282,26 @@ class MainWindow(QMainWindow):
             return
 
         alternatives = [m for m in active if m.device != device]
-        if not alternatives:
+        allow_all_off = bool(
+            load_preferences().get("allow_all_monitors_off", False)
+        )
+        if not alternatives and not allow_all_off:
             QMessageBox.information(
                 self,
-                "Última pantalla activa",
-                "Pantallas no permite apagar la última pantalla activa.",
+                "No se puede apagar el último monitor",
+                "Este es el último monitor activo. Pantallas lo mantiene encendido "
+                "para que siempre tengas una pantalla desde la que controlar la aplicación.\n\n"
+                "Podés desactivar esta protección en Configuración > Seguridad de monitores.",
             )
             return
 
-        if self.isVisible():
+        if alternatives and self.isVisible():
             self._move_window_to_monitor(alternatives[0].device)
 
-        ok, message, profile = disable_monitor(device)
+        ok, message, profile = disable_monitor(
+            device,
+            allow_last=allow_all_off,
+        )
         if not ok or profile is None:
             QMessageBox.warning(self, "No se pudo apagar", message)
             return
@@ -319,9 +329,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No se pudo encender", message)
             return
 
+        saved_brightness = profile.get("brightness")
+        if saved_brightness is not None:
+            try:
+                set_cached_brightness(device, int(saved_brightness))
+            except Exception:
+                pass
+
         remove_disabled_monitor(device)
         self._status(message)
-        QTimer.singleShot(1200, self.refresh_all)
+        # DDC/CI often becomes available after video has already returned.
+        # Refresh several times so the brightness control recovers by itself.
+        for delay in (500, 1400, 2800, 5000):
+            QTimer.singleShot(delay, self.refresh_all)
 
     def set_tray_brightness(self, device: str, percent: int) -> None:
         monitor = next(
@@ -336,6 +356,7 @@ class MainWindow(QMainWindow):
             return
 
         if set_monitor_brightness(monitor.handle, percent):
+            set_cached_brightness(device, percent)
             self._status(f"Brillo de {monitor_display_name(monitor)}: {percent}%")
             if self.stack.currentWidget() is self.pages["monitors"]:
                 workspace: MonitorsWorkspacePage = self.pages["monitors"]
@@ -357,7 +378,9 @@ class MainWindow(QMainWindow):
 
         all_monitors = enum_monitors()
         disabled = reconcile_active_devices({m.device for m in all_monitors})
-        active = [m for m in all_monitors if m.device not in disabled]
+        active = sort_monitors(
+            [m for m in all_monitors if m.device not in disabled]
+        )
 
         for monitor in active:
             label = monitor_display_name(monitor)
@@ -380,7 +403,6 @@ class MainWindow(QMainWindow):
 
             submenu.addSeparator()
             off = submenu.addAction("Apagar monitor")
-            off.setEnabled(len(active) > 1)
             off.triggered.connect(
                 lambda _=False, dev=monitor.device:
                     self.disable_monitor_from_ui(dev)
