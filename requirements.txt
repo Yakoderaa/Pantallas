@@ -1,0 +1,3 @@
+PySide6>=6.8,<7
+pywin32>=308
+psutil>=6.0
