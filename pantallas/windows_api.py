@@ -80,6 +80,15 @@ _dxva2.SetVCPFeature.argtypes = [
 ]
 _dxva2.SetVCPFeature.restype = wintypes.BOOL
 
+_dxva2.GetVCPFeatureAndVCPFeatureReply.argtypes = [
+    wintypes.HANDLE,
+    wintypes.BYTE,
+    ctypes.POINTER(ctypes.c_int),
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.POINTER(wintypes.DWORD),
+]
+_dxva2.GetVCPFeatureAndVCPFeatureReply.restype = wintypes.BOOL
+
 
 def _handle_value(handle: object) -> int:
     try:
@@ -313,29 +322,8 @@ def _pulse_monitor_signal(profile: dict) -> None:
     _wake_windows_displays()
 
 
-def disable_monitor(device: str, *, allow_last: bool = False) -> tuple[bool, str, dict | None]:
-    active = enum_monitors()
-    monitor = next((m for m in active if m.device == device), None)
-    if monitor is None:
-        return False, "La pantalla seleccionada ya no está activa.", None
-    if len(active) <= 1 and not allow_last:
-        return False, "No se puede apagar la última pantalla activa.", None
-
+def _disable_monitor_windows(device: str, profile: dict) -> tuple[bool, str]:
     try:
-        profile = capture_monitor_profile(device)
-
-        # Prefer reversible DDC standby first. It doesn't rewrite Windows'
-        # desktop topology and is the safest path for monitors that support it.
-        if set_monitor_power_value(monitor.handle, 0x02):
-            profile["mode"] = "ddc_standby"
-            profile["power_value"] = 0x02
-            return (
-                True,
-                f"{profile['name']} fue puesto en standby por DDC/CI.",
-                profile,
-            )
-
-        # If DDC power control is unavailable, ask Windows to disable the path.
         devmode = win32api.EnumDisplaySettings(device, win32con.ENUM_CURRENT_SETTINGS)
         devmode.Position_x = 0
         devmode.Position_y = 0
@@ -346,46 +334,82 @@ def disable_monitor(device: str, *, allow_last: bool = False) -> tuple[bool, str
         result = win32api.ChangeDisplaySettingsEx(
             device,
             devmode,
-            _CDS_UPDATEREGISTRY,
+            _CDS_UPDATEREGISTRY | _CDS_RESET,
         )
-        if result == win32con.DISP_CHANGE_SUCCESSFUL:
-            time.sleep(0.8)
-            still_active = any(m.device == device for m in enum_monitors())
-            if not still_active:
-                profile["mode"] = "windows_disabled"
-                return (
-                    True,
-                    f"{profile['name']} fue desactivado desde Windows.",
-                    profile,
-                )
+        if result != win32con.DISP_CHANGE_SUCCESSFUL:
+            return False, f"Windows rechazó desactivar la salida (código {result})."
 
-        # Compatibility fallback for displays that support only suspend/deep-off.
-        current = next((m for m in enum_monitors() if m.device == device), monitor)
-        if set_monitor_power_value(current.handle, 0x03):
-            profile["mode"] = "ddc_suspend"
-            profile["power_value"] = 0x03
-            return (
-                True,
-                f"{profile['name']} fue suspendido por DDC/CI.",
-                profile,
-            )
-
-        if set_monitor_power_value(current.handle, 0x04):
-            profile["mode"] = "ddc_off"
-            profile["power_value"] = 0x04
-            return (
-                True,
-                f"{profile['name']} fue apagado por DDC/CI.",
-                profile,
-            )
-
-        # Return the saved mode if Windows reported success without actually
-        # removing the path, so the desktop is never left in a half-applied state.
+        win32api.ChangeDisplaySettingsEx(None, None, 0)
+        time.sleep(0.9)
+        if any(m.device == device for m in enum_monitors()):
+            _restore_monitor_profile(profile)
+            return False, "Windows mantuvo la salida activa."
+        return True, "Salida desactivada desde Windows."
+    except Exception as exc:
         _restore_monitor_profile(profile)
+        return False, f"Windows no pudo desactivar la salida: {exc}"
+
+
+def _disable_monitor_ddc(device: str, monitor: MonitorInfo) -> tuple[bool, str, str]:
+    # Standby first; it is the most wake-friendly MCCS power state.
+    for value, mode, label in (
+        (0x02, "ddc_standby", "standby"),
+        (0x03, "ddc_suspend", "suspensión"),
+        (0x04, "ddc_off", "apagado"),
+    ):
+        if not set_monitor_power_value(monitor.handle, value):
+            continue
+        if _verify_ddc_sleep(device):
+            return True, f"Monitor en {label} por DDC/CI.", mode
+
+        # Some monitors ACK VCP D6 but ignore it. Return to ON before trying
+        # another method so an acknowledged no-op never counts as success.
+        fresh = next((m for m in enum_monitors() if m.device == device), monitor)
+        set_monitor_power_value(fresh.handle, 0x01)
+        time.sleep(0.2)
+
+    return False, "El monitor aceptó el comando DDC/CI pero no cambió de estado.", ""
+
+
+def disable_monitor(
+    device: str,
+    *,
+    allow_last: bool = False,
+    preferred_method: str = "auto",
+) -> tuple[bool, str, dict | None]:
+    active = enum_monitors()
+    monitor = next((m for m in active if m.device == device), None)
+    if monitor is None:
+        return False, "La pantalla seleccionada ya no está activa.", None
+    if len(active) <= 1 and not allow_last:
+        return False, "No se puede apagar la última pantalla activa.", None
+
+    try:
+        profile = capture_monitor_profile(device)
+        method = preferred_method if preferred_method in {"windows", "ddc"} else "ddc"
+        methods = [method, "windows" if method == "ddc" else "ddc"]
+        errors: list[str] = []
+
+        for candidate in methods:
+            if candidate == "ddc":
+                ok, detail, mode = _disable_monitor_ddc(device, monitor)
+                if ok:
+                    profile["mode"] = mode
+                    profile["power_method"] = "ddc"
+                    return True, f"{profile['name']} fue apagado. {detail}", profile
+                errors.append(f"DDC/CI: {detail}")
+                continue
+
+            ok, detail = _disable_monitor_windows(device, profile)
+            if ok:
+                profile["mode"] = "windows_disabled"
+                profile["power_method"] = "windows"
+                return True, f"{profile['name']} fue apagado. {detail}", profile
+            errors.append(f"Windows: {detail}")
+
         return (
             False,
-            "El monitor no aceptó standby/suspensión por DDC/CI y Windows no "
-            "consiguió desactivar su salida.",
+            "No se pudo apagar este monitor. " + " | ".join(errors),
             None,
         )
     except Exception as exc:
@@ -450,7 +474,9 @@ def enable_monitor(profile: dict) -> tuple[bool, str]:
                 time.sleep(0.55 if attempt < 3 else 0.9)
 
             if power_ok or responsive:
-                return True, f"{name} fue encendido nuevamente."
+                monitor = next((m for m in enum_monitors() if m.device == device), None)
+                if monitor is not None and monitor_ddc_is_awake(monitor.handle):
+                    return True, f"{name} fue encendido nuevamente."
 
             # Some panels stop listening to DDC after standby/deep-off.
             # Force a display-driver reset before the heavier link retrain.
@@ -566,6 +592,52 @@ def set_monitor_brightness(hmonitor: int, percent: int) -> bool:
         return any_success
     finally:
         _dxva2.DestroyPhysicalMonitors(count, array)
+
+
+def get_monitor_power_value(hmonitor: int) -> int | None:
+    """Read MCCS VCP D6 power mode when the monitor exposes it."""
+    array, count = _physical_monitors(hmonitor)
+    if not array or count <= 0:
+        return None
+    try:
+        for physical in array:
+            code_type = ctypes.c_int(0)
+            current = wintypes.DWORD(0)
+            maximum = wintypes.DWORD(0)
+            if _dxva2.GetVCPFeatureAndVCPFeatureReply(
+                physical.hPhysicalMonitor,
+                0xD6,
+                ctypes.byref(code_type),
+                ctypes.byref(current),
+                ctypes.byref(maximum),
+            ):
+                return int(current.value)
+        return None
+    finally:
+        _dxva2.DestroyPhysicalMonitors(count, array)
+
+
+def monitor_ddc_is_awake(hmonitor: int) -> bool:
+    power = get_monitor_power_value(hmonitor)
+    if power is not None:
+        return power == 0x01
+    return get_monitor_brightness(hmonitor) is not None
+
+
+def _verify_ddc_sleep(device: str, *, timeout: float = 1.8) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        monitor = next((m for m in enum_monitors() if m.device == device), None)
+        if monitor is None:
+            return True
+        power = get_monitor_power_value(monitor.handle)
+        if power in {0x02, 0x03, 0x04, 0x05}:
+            return True
+        # If DDC itself goes away after the command, the panel entered sleep.
+        if power is None and get_monitor_brightness(monitor.handle) is None:
+            return True
+        time.sleep(0.25)
+    return False
 
 
 def set_monitor_power_value(hmonitor: int, value: int) -> bool:
