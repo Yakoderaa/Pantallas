@@ -224,6 +224,7 @@ notice cannot create them.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Monitor power control](docs/POWER_CONTROL.md)
 - [Security policy](SECURITY.md)
+- [Repository hardening](docs/REPOSITORY_HARDENING.md)
 - [Intellectual property](docs/INTELLECTUAL_PROPERTY.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
