@@ -27,7 +27,7 @@ from .monitor_aliases import display_name_for_device, monitor_display_name
 from .monitor_order import sort_monitors
 from .monitor_state import (
     load_disabled_monitors,
-    reconcile_active_devices,
+    reconcile_monitors,
     remove_disabled_monitor,
     save_disabled_monitor,
 )
@@ -192,6 +192,7 @@ class MainWindow(QMainWindow):
 
         monitors.disable_requested.connect(self.disable_monitor_from_ui)
         monitors.enable_requested.connect(self.enable_monitor_from_ui)
+        monitors.mark_on_requested.connect(self.mark_monitor_on_from_ui)
         monitors.status.connect(self._status)
 
         rules.status.connect(self._status)
@@ -264,7 +265,7 @@ class MainWindow(QMainWindow):
 
     def _effective_active_monitors(self):
         all_monitors = enum_monitors()
-        disabled = reconcile_active_devices({m.device for m in all_monitors})
+        disabled = reconcile_monitors(all_monitors)
         return [m for m in all_monitors if m.device not in disabled]
 
     def disable_monitor_from_ui(self, device: str) -> None:
@@ -332,6 +333,32 @@ class MainWindow(QMainWindow):
             3500,
         )
         QTimer.singleShot(900, self.refresh_all)
+
+    def mark_monitor_on_from_ui(self, device: str) -> None:
+        monitor = next(
+            (m for m in enum_monitors() if m.device == device),
+            None,
+        )
+        if monitor is None:
+            QMessageBox.information(
+                self,
+                "Monitor no detectado",
+                "Windows todavía no detecta ese monitor como activo. "
+                "Si está encendido, esperá unos segundos y volvé a detectar.",
+            )
+            return
+
+        remove_disabled_monitor(device)
+        self._status(
+            f"{monitor_display_name(monitor)} sincronizado como encendido."
+        )
+        self.tray.showMessage(
+            "Estado sincronizado",
+            f"{monitor_display_name(monitor)} ahora figura como encendido.",
+            QSystemTrayIcon.MessageIcon.Information,
+            2500,
+        )
+        self.refresh_all()
 
     def enable_monitor_from_ui(self, device: str) -> None:
         profile = load_disabled_monitors().get(device)
@@ -406,7 +433,7 @@ class MainWindow(QMainWindow):
         self.tray_menu.addSeparator()
 
         all_monitors = enum_monitors()
-        disabled = reconcile_active_devices({m.device for m in all_monitors})
+        disabled = reconcile_monitors(all_monitors)
         active = sort_monitors(
             [m for m in all_monitors if m.device not in disabled]
         )
