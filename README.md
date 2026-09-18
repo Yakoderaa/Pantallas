@@ -2,7 +2,7 @@
 
 **Pantallas** es una aplicación de escritorio para Windows, escrita en Python, para visualizar y organizar monitores y mantener aplicaciones fijadas a una zona concreta de una pantalla.
 
-## V0.1
+## V0.2
 
 - Detecta todos los monitores activos.
 - Muestra resolución, orientación, coordenadas y monitor principal.
@@ -15,6 +15,9 @@
 - Las reglas guardan monitor y geometría como porcentajes del área útil, por lo que funcionan bien con monitores de resoluciones distintas.
 - Un motor de reglas vuelve a colocar automáticamente las ventanas que se muevan.
 - La aplicación puede quedarse en la bandeja del sistema mientras mantiene las reglas activas.
+- Busca actualizaciones automáticamente al iniciar y cada 30 minutos mientras está abierta.
+- Incluye el botón **Buscar actualizaciones** dentro de la aplicación.
+- Las actualizaciones se descargan desde GitHub Releases, se validan por SHA-256, cierran Pantallas, se instalan silenciosamente y vuelven a abrir la aplicación.
 
 ## Requisitos
 
@@ -34,9 +37,13 @@ pip install -r requirements.txt
 python app.py
 ```
 
-## EXE
+## Instalador y actualizaciones
 
-El workflow de GitHub Actions `build-windows.yml` genera `Pantallas.exe` como artefacto de Windows.
+El workflow de GitHub Actions `build-windows.yml` genera `Pantallas.exe`, crea `PantallasSetup.exe` con Inno Setup y publica el instalador junto con su checksum SHA-256 en GitHub Releases.
+
+Cada push nuevo a `main` genera un nuevo build publicable. El workflow usa concurrencia con cancelación para evitar publicar builds intermedios cuando se suben varios archivos consecutivamente.
+
+La aplicación consulta la release más reciente. Si detecta un build superior al instalado, descarga `PantallasSetup.exe`, verifica el checksum y lanza el instalador después de cerrar la aplicación. El instalador vuelve a abrir Pantallas cuando termina.
 
 ## Cómo crear una regla
 
