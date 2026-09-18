@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Esperar cambios consecutivos
@@ -28,10 +28,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Python 3.12
+      - name: Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
 
       - name: Instalar dependencias
@@ -50,21 +50,33 @@ jobs:
           BUILD_COMMIT = "${{ github.sha }}"
           "@ | Set-Content -Encoding UTF8 pantallas/build_info.py
 
-      - name: Smoke test de imports
+      - name: Smoke test de Python
         shell: pwsh
         run: |
           python -m compileall -q app.py pantallas
-          python -c "import pantallas.windows_api; import pantallas.monitor_state; import pantallas.preferences; import pantallas.rules; import pantallas.update_service; import pantallas.main_window; print('imports OK')"
+          python -c "import pantallas.windows_api; import pantallas.monitor_state; import pantallas.preferences; import pantallas.rules; import pantallas.update_service; import pantallas.ui_theme; import pantallas.ui_pages; import pantallas.main_window; print('imports OK')"
 
-      - name: Construir Pantallas.exe
+      - name: Construir aplicación onedir
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --name Pantallas app.py
+          pyinstaller --noconfirm --clean --onedir --windowed --name Pantallas app.py
+
+      - name: Verificar runtime empaquetado
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist\Pantallas\Pantallas.exe")) {
+            throw "Pantallas.exe no fue generado."
+          }
+          $pythonDll = Get-ChildItem "dist\Pantallas" -Recurse -Filter "python311.dll" | Select-Object -First 1
+          if ($null -eq $pythonDll) {
+            throw "python311.dll no está incluido en el paquete onedir."
+          }
+          Write-Host "Runtime Python encontrado en $($pythonDll.FullName)"
 
       - name: Construir instalador
         shell: pwsh
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.3.0.${{ github.run_number }}" installer\Pantallas.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.4.0.${{ github.run_number }}" installer\Pantallas.iss
 
       - name: Generar SHA-256
         shell: pwsh
@@ -89,4 +101,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "build-${{ github.run_number }}"
-          gh release create $tag "installer_output/PantallasSetup.exe" "installer_output/PantallasSetup.exe.sha256" --repo "${{ github.repository }}" --title "Pantallas build ${{ github.run_number }}" --notes "Actualización automática de Pantallas. Commit ${{ github.sha }}."
+          gh release create $tag "installer_output/PantallasSetup.exe" "installer_output/PantallasSetup.exe.sha256" --repo "${{ github.repository }}" --title "Pantallas build ${{ github.run_number }}" --notes "Pantallas V0.4. Runtime onedir estable. Commit ${{ github.sha }}."
