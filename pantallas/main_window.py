@@ -36,6 +36,13 @@ from .preferences import (
     set_windows_startup,
     startup_is_registered,
 )
+from .power_profiles import (
+    choose_automatic_method,
+    get_power_preference,
+    record_ddc_off,
+    record_ddc_wake,
+    record_windows_off,
+)
 from .rules import RuleEnforcer, RuleStore
 from .ui_pages import (
     DashboardPage,
@@ -287,15 +294,27 @@ class MainWindow(QMainWindow):
         if alternatives and self.isVisible():
             self._move_window_to_monitor(alternatives[0].device)
 
+        preference = get_power_preference(device)
+        selected_method = (
+            choose_automatic_method(device)
+            if preference == "auto"
+            else preference
+        )
         ok, message, profile = disable_monitor(
             device,
             allow_last=allow_all_off,
+            preferred_method=selected_method,
         )
         if not ok or profile is None:
             QMessageBox.warning(self, "No se pudo apagar", message)
             return
 
         profile["name"] = monitor_display_name(target)
+        method_used = str(profile.get("power_method", ""))
+        if method_used == "ddc":
+            record_ddc_off(device, True)
+        elif method_used == "windows":
+            record_windows_off(device, True)
         save_disabled_monitor(profile)
         self._status(message)
         self.tray.showMessage(
@@ -314,8 +333,21 @@ class MainWindow(QMainWindow):
             return
 
         ok, message = enable_monitor(profile)
+        method_used = str(profile.get("power_method", ""))
+        if method_used == "ddc":
+            record_ddc_wake(device, ok)
+
         if not ok:
-            QMessageBox.warning(self, "No se pudo encender", message)
+            preference = get_power_preference(device)
+            extra = ""
+            if method_used == "ddc" and preference == "auto":
+                extra = (
+                    "\n\nPantallas marcó DDC/CI como no confiable para este monitor. "
+                    "Los próximos apagados automáticos usarán Windows. Para recuperar "
+                    "esta vez un panel que dejó de escuchar DDC/CI puede ser necesario "
+                    "usar su botón físico una sola vez."
+                )
+            QMessageBox.warning(self, "No se pudo encender", message + extra)
             return
 
         saved_brightness = profile.get("brightness")
