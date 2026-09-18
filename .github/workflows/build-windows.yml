@@ -7,9 +7,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 concurrency:
   group: pantallas-release-${{ github.ref }}
   cancel-in-progress: true
@@ -18,6 +15,8 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
 
     steps:
       - name: Esperar cambios consecutivos
@@ -39,8 +38,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install pyinstaller pillow
           choco install innosetup -y --no-progress
+
+      - name: Generar identidad Windows
+        shell: pwsh
+        run: |
+          python tools/generate_icons.py
+          if (!(Test-Path "assets\generated\pantallas.ico")) {
+            throw "No se generó el icono principal."
+          }
 
       - name: Inyectar identificador de build
         shell: pwsh
@@ -53,15 +60,15 @@ jobs:
       - name: Smoke test de Python
         shell: pwsh
         run: |
-          python -m compileall -q app.py pantallas
-          python -c "import pantallas.windows_api; import pantallas.monitor_state; import pantallas.monitor_order; import pantallas.brightness_cache; import pantallas.preferences; import pantallas.rules; import pantallas.update_service; import pantallas.ui_theme; import pantallas.ui_pages; import pantallas.main_window; print('imports OK')"
+          python -m compileall -q app.py pantallas tools
+          python -c "import pantallas.windows_api; import pantallas.monitor_state; import pantallas.monitor_order; import pantallas.brightness_cache; import pantallas.power_profiles; import pantallas.preferences; import pantallas.rules; import pantallas.resources; import pantallas.update_service; import pantallas.ui_theme; import pantallas.ui_pages; import pantallas.main_window; print('imports OK')"
 
       - name: Construir aplicación onedir
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onedir --windowed --name Pantallas app.py
+          pyinstaller --noconfirm --clean --onedir --windowed --name Pantallas --icon "assets\generated\pantallas.ico" --add-data "assets\brand;assets\brand" app.py
 
-      - name: Verificar runtime empaquetado
+      - name: Verificar runtime e identidad
         shell: pwsh
         run: |
           if (!(Test-Path "dist\Pantallas\Pantallas.exe")) {
@@ -71,12 +78,14 @@ jobs:
           if ($null -eq $pythonDll) {
             throw "python311.dll no está incluido en el paquete onedir."
           }
-          Write-Host "Runtime Python encontrado en $($pythonDll.FullName)"
+          if (!(Test-Path "dist\Pantallas\_internal\assets\brand\pantallas.svg") -and !(Test-Path "dist\Pantallas\assets\brand\pantallas.svg")) {
+            throw "Los recursos de marca no quedaron empaquetados."
+          }
 
       - name: Construir instalador
         shell: pwsh
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.7.0.${{ github.run_number }}" installer\Pantallas.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.8.0.${{ github.run_number }}" installer\Pantallas.iss
 
       - name: Generar SHA-256
         shell: pwsh
@@ -94,11 +103,24 @@ jobs:
             installer_output/PantallasSetup.exe.sha256
           if-no-files-found: error
 
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Descargar artefacto verificado
+        uses: actions/download-artifact@v4
+        with:
+          name: Pantallas-Windows-build-${{ github.run_number }}
+          path: release
+
       - name: Publicar actualización
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "build-${{ github.run_number }}"
-          gh release create $tag "installer_output/PantallasSetup.exe" "installer_output/PantallasSetup.exe.sha256" --repo "${{ github.repository }}" --title "Pantallas build ${{ github.run_number }}" --notes "Pantallas V0.7. Estado de apagado corregido, distribución editable eliminada y bloqueo global desde bandeja. Commit ${{ github.sha }}."
+          tag="build-${{ github.run_number }}"
+          gh release create "$tag" release/PantallasSetup.exe release/PantallasSetup.exe.sha256 --repo "${{ github.repository }}" --title "Pantallas build ${{ github.run_number }}" --notes "Pantallas V0.8. Energía adaptativa por monitor, identidad visual profesional y endurecimiento del repositorio. Commit ${{ github.sha }}."
