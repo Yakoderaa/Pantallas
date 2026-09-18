@@ -39,15 +39,28 @@ from PySide6.QtWidgets import (
 from . import __version__
 from .build_info import BUILD_ID
 from .models import MonitorInfo, WindowInfo
+from .monitor_state import (
+    load_disabled_monitors,
+    reconcile_active_devices,
+    remove_disabled_monitor,
+    save_disabled_monitor,
+)
+from .preferences import (
+    load_preferences,
+    save_preferences,
+    set_windows_startup,
+    startup_is_registered,
+)
 from .rules import RuleEnforcer, RuleStore
 from .update_service import UpdateWorker, launch_installer_after_exit
 from .windows_api import (
     apply_monitor_layout,
+    disable_monitor,
+    enable_monitor,
     enum_monitors,
     enum_windows,
     get_monitor_brightness,
     set_monitor_brightness,
-    set_monitor_power,
 )
 
 
@@ -307,6 +320,8 @@ class MonitorCanvas(QGraphicsView):
 
 class MonitorPage(QWidget):
     status = Signal(str)
+    request_disable_monitor = Signal(str)
+    request_enable_monitor = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -394,13 +409,18 @@ class MonitorPage(QWidget):
         self.ddc_status.setStyleSheet("color: #8b949e;")
         controls.addWidget(self.ddc_status)
 
-        power_row = QHBoxLayout()
-        self.power_on = QPushButton("Encender")
-        self.power_off = QPushButton("Apagar")
+        self.power_off = QPushButton("Apagar este monitor")
         self.power_off.setObjectName("DangerButton")
-        power_row.addWidget(self.power_on)
-        power_row.addWidget(self.power_off)
-        controls.addLayout(power_row)
+        controls.addWidget(self.power_off)
+
+        controls.addSpacing(12)
+        disabled_title = QLabel("Monitores apagados")
+        disabled_title.setStyleSheet("font-weight: 700;")
+        controls.addWidget(disabled_title)
+        self.disabled_combo = QComboBox()
+        self.enable_disabled = QPushButton("Encender monitor seleccionado")
+        controls.addWidget(self.disabled_combo)
+        controls.addWidget(self.enable_disabled)
         controls.addStretch()
 
         root.addLayout(left, 1)
@@ -414,8 +434,8 @@ class MonitorPage(QWidget):
         self.x_spin.editingFinished.connect(self.position_changed)
         self.y_spin.editingFinished.connect(self.position_changed)
         self.brightness.sliderReleased.connect(self.brightness_changed)
-        self.power_on.clicked.connect(partial(self.power_changed, True))
-        self.power_off.clicked.connect(partial(self.power_changed, False))
+        self.power_off.clicked.connect(self.request_disable_selected)
+        self.enable_disabled.clicked.connect(self.request_enable_selected)
 
         self.refresh()
 
@@ -424,10 +444,15 @@ class MonitorPage(QWidget):
 
     def refresh(self) -> None:
         self.monitors = enum_monitors()
+        reconcile_active_devices({monitor.device for monitor in self.monitors})
+        self.refresh_disabled()
         self.canvas.load_monitors(self.monitors)
         if self.monitors:
-            self.select_monitor(self.monitors[0].device)
-            self.status.emit(f"{len(self.monitors)} pantalla(s) detectada(s)")
+            preferred = self.selected_device
+            if not any(m.device == preferred for m in self.monitors):
+                preferred = self.monitors[0].device
+            self.select_monitor(preferred)
+            self.status.emit(f"{len(self.monitors)} pantalla(s) activa(s)")
         else:
             self.selected_device = ""
             self.monitor_name.setText("No se detectaron pantallas")
@@ -453,6 +478,11 @@ class MonitorPage(QWidget):
         self.orientation_combo.blockSignals(False)
         self.sync_position_controls(device)
         self.load_brightness()
+        self.power_off.setEnabled(len(self.monitors) > 1)
+        if len(self.monitors) <= 1:
+            self.power_off.setToolTip("No se puede apagar la última pantalla activa.")
+        else:
+            self.power_off.setToolTip("")
 
     def sync_position_controls(self, _device: str = "") -> None:
         if not self.selected_device:
@@ -519,21 +549,39 @@ class MonitorPage(QWidget):
             self.load_brightness()
             self.status.emit("El monitor rechazó el cambio de brillo.")
 
-    def power_changed(self, on: bool) -> None:
-        monitor = self.monitor_by_device(self.selected_device)
-        if monitor is None:
+    def refresh_disabled(self) -> None:
+        current = self.disabled_combo.currentData() if hasattr(self, "disabled_combo") else None
+        profiles = load_disabled_monitors()
+        if hasattr(self, "disabled_combo"):
+            self.disabled_combo.clear()
+            for device, profile in profiles.items():
+                self.disabled_combo.addItem(
+                    str(profile.get("name") or device),
+                    device,
+                )
+            if current:
+                idx = self.disabled_combo.findData(current)
+                if idx >= 0:
+                    self.disabled_combo.setCurrentIndex(idx)
+            self.disabled_combo.setEnabled(bool(profiles))
+            self.enable_disabled.setEnabled(bool(profiles))
+
+    def request_disable_selected(self) -> None:
+        if not self.selected_device:
             return
-        if set_monitor_power(monitor.handle, on):
-            self.status.emit(
-                f"{'Encendido' if on else 'Apagado'} enviado a {monitor.name}."
-            )
-        else:
+        if len(self.monitors) <= 1:
             QMessageBox.information(
                 self,
-                "DDC/CI no disponible",
-                "Este monitor no aceptó el comando de energía individual. "
-                "Puede requerir habilitar DDC/CI desde el menú físico del monitor.",
+                "Última pantalla activa",
+                "Pantallas no permite apagar la última pantalla activa.",
             )
+            return
+        self.request_disable_monitor.emit(self.selected_device)
+
+    def request_enable_selected(self) -> None:
+        device = self.disabled_combo.currentData()
+        if device:
+            self.request_enable_monitor.emit(str(device))
 
 
 class WindowRulesPage(QWidget):
@@ -800,6 +848,82 @@ class WindowRulesPage(QWidget):
             self.rules_table.setCellWidget(row, 5, delete)
 
 
+class SettingsPage(QWidget):
+    status = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        prefs = load_preferences()
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(14)
+
+        title = QLabel("Configuración")
+        title.setStyleSheet("font-size: 16pt; font-weight: 700;")
+        root.addWidget(title)
+
+        card = QFrame()
+        card.setObjectName("Card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 18, 18, 18)
+
+        self.start_with_windows = QCheckBox("Iniciar Pantallas con Windows")
+        self.start_minimized = QCheckBox("Iniciar minimizada en la bandeja")
+        self.start_with_windows.setChecked(startup_is_registered())
+        self.start_minimized.setChecked(bool(prefs.get("start_minimized", True)))
+
+        note = QLabel(
+            "Cuando el inicio minimizado está activo, Pantallas arranca en la bandeja "
+            "y las reglas de ventanas siguen funcionando sin abrir la ventana principal."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #8b949e;")
+
+        layout.addWidget(self.start_with_windows)
+        layout.addWidget(self.start_minimized)
+        layout.addWidget(note)
+        root.addWidget(card)
+        root.addStretch()
+
+        self.start_with_windows.toggled.connect(self._startup_changed)
+        self.start_minimized.toggled.connect(self._minimized_changed)
+
+    def _startup_changed(self, enabled: bool) -> None:
+        ok, message = set_windows_startup(
+            enabled,
+            start_minimized=self.start_minimized.isChecked(),
+        )
+        if not ok:
+            self.start_with_windows.blockSignals(True)
+            self.start_with_windows.setChecked(not enabled)
+            self.start_with_windows.blockSignals(False)
+        self.status.emit(message)
+
+    def _minimized_changed(self, enabled: bool) -> None:
+        if self.start_with_windows.isChecked():
+            ok, message = set_windows_startup(
+                True,
+                start_minimized=enabled,
+            )
+            if not ok:
+                self.start_minimized.blockSignals(True)
+                self.start_minimized.setChecked(not enabled)
+                self.start_minimized.blockSignals(False)
+                self.status.emit(message)
+                return
+        else:
+            save_preferences(
+                start_with_windows=False,
+                start_minimized=enabled,
+            )
+        self.status.emit(
+            "Inicio minimizado activado."
+            if enabled
+            else "Pantallas se abrirá visible al iniciar con Windows."
+        )
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -811,15 +935,20 @@ class MainWindow(QMainWindow):
         self.store = RuleStore()
         self.enforcer = RuleEnforcer(self.store)
 
-        tabs = QTabWidget()
+        self.tabs = QTabWidget()
         self.monitor_page = MonitorPage()
         self.rules_page = WindowRulesPage(self.store, self.enforcer)
-        tabs.addTab(self.monitor_page, "Pantallas")
-        tabs.addTab(self.rules_page, "Ventanas y reglas")
-        self.setCentralWidget(tabs)
+        self.settings_page = SettingsPage()
+        self.tabs.addTab(self.monitor_page, "Pantallas")
+        self.tabs.addTab(self.rules_page, "Ventanas y reglas")
+        self.tabs.addTab(self.settings_page, "Configuración")
+        self.setCentralWidget(self.tabs)
 
         self.monitor_page.status.connect(self.statusBar().showMessage)
+        self.monitor_page.request_disable_monitor.connect(self.disable_monitor_from_ui)
+        self.monitor_page.request_enable_monitor.connect(self.enable_monitor_from_ui)
         self.rules_page.status.connect(self.statusBar().showMessage)
+        self.settings_page.status.connect(self.statusBar().showMessage)
         self.statusBar().showMessage("Listo")
 
         self.version_label = QLabel(
@@ -850,12 +979,9 @@ class MainWindow(QMainWindow):
         self.tray.setIcon(tray_icon)
         self.tray.setToolTip("Pantallas")
 
-        menu = QMenu()
-        show_action = menu.addAction("Abrir Pantallas")
-        quit_action = menu.addAction("Salir")
-        show_action.triggered.connect(self.show_from_tray)
-        quit_action.triggered.connect(self.quit_app)
-        self.tray.setContextMenu(menu)
+        self.tray_menu = QMenu()
+        self.tray_menu.aboutToShow.connect(self.rebuild_tray_menu)
+        self.tray.setContextMenu(self.tray_menu)
         self.tray.activated.connect(self.tray_activated)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
@@ -920,6 +1046,163 @@ class MainWindow(QMainWindow):
         self._update_worker = None
         if worker is not None:
             worker.deleteLater()
+
+    def _move_window_to_monitor(self, device: str) -> None:
+        monitor = next((m for m in enum_monitors() if m.device == device), None)
+        if monitor is None:
+            return
+        width = min(max(self.width(), self.minimumWidth()), max(700, monitor.work_width - 80))
+        height = min(max(self.height(), self.minimumHeight()), max(520, monitor.work_height - 80))
+        self.showNormal()
+        self.resize(width, height)
+        self.move(monitor.work_left + 40, monitor.work_top + 40)
+        QApplication.processEvents()
+
+    def open_monitor_from_tray(self, device: str) -> None:
+        self.show_from_tray()
+        self.tabs.setCurrentWidget(self.monitor_page)
+        self.monitor_page.select_monitor(device)
+        self._move_window_to_monitor(device)
+
+    def disable_monitor_from_ui(self, device: str) -> None:
+        active = enum_monitors()
+        target = next((m for m in active if m.device == device), None)
+        if target is None:
+            self.statusBar().showMessage("La pantalla ya no está activa.", 5000)
+            self.monitor_page.refresh()
+            return
+        alternatives = [m for m in active if m.device != device]
+        if not alternatives:
+            QMessageBox.information(
+                self,
+                "Última pantalla activa",
+                "No se puede apagar la última pantalla activa.",
+            )
+            return
+
+        fallback = alternatives[0]
+        if self.isVisible():
+            self._move_window_to_monitor(fallback.device)
+
+        ok, message, profile = disable_monitor(device)
+        if ok and profile is not None:
+            save_disabled_monitor(profile)
+            self.statusBar().showMessage(message, 5000)
+            self.tray.showMessage(
+                "Monitor apagado",
+                f"{target.name} fue desactivado. Podés volver a encenderlo desde el menú de Pantallas.",
+                QSystemTrayIcon.MessageIcon.Information,
+                3000,
+            )
+            QTimer.singleShot(900, self.refresh_monitor_views)
+        else:
+            QMessageBox.warning(self, "No se pudo apagar", message)
+
+    def enable_monitor_from_ui(self, device: str) -> None:
+        profile = load_disabled_monitors().get(device)
+        if profile is None:
+            self.statusBar().showMessage("No se encontró la configuración guardada de esa pantalla.", 5000)
+            return
+
+        ok, message = enable_monitor(profile)
+        if ok:
+            remove_disabled_monitor(device)
+            self.statusBar().showMessage(message, 5000)
+            QTimer.singleShot(1200, self.refresh_monitor_views)
+        else:
+            QMessageBox.warning(self, "No se pudo encender", message)
+
+    def refresh_monitor_views(self) -> None:
+        self.monitor_page.refresh()
+        self.rules_page.refresh_monitors()
+
+    def set_tray_brightness(self, device: str, percent: int) -> None:
+        monitor = next((m for m in enum_monitors() if m.device == device), None)
+        if monitor is None:
+            self.tray.showMessage("Pantallas", "Ese monitor ya no está activo.")
+            return
+        if set_monitor_brightness(monitor.handle, percent):
+            self.statusBar().showMessage(f"Brillo de {monitor.name}: {percent}%", 4000)
+            if self.monitor_page.selected_device == device:
+                self.monitor_page.load_brightness()
+        else:
+            self.tray.showMessage(
+                "Brillo no disponible",
+                f"{monitor.name} no aceptó el cambio de brillo por DDC/CI.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                3000,
+            )
+
+    def rebuild_tray_menu(self) -> None:
+        self.tray_menu.clear()
+
+        open_action = self.tray_menu.addAction("Abrir Pantallas")
+        open_action.triggered.connect(self.show_from_tray)
+        self.tray_menu.addSeparator()
+
+        active = enum_monitors()
+        disabled = reconcile_active_devices({m.device for m in active})
+
+        for monitor in active:
+            suffix = " · principal" if monitor.primary else ""
+            submenu = self.tray_menu.addMenu(f"{monitor.name}{suffix}")
+
+            configure = submenu.addAction("Abrir y configurar aquí")
+            configure.triggered.connect(
+                lambda _checked=False, device=monitor.device: self.open_monitor_from_tray(device)
+            )
+
+            brightness_menu = submenu.addMenu("Brillo")
+            for value in (25, 50, 75, 100):
+                action = brightness_menu.addAction(f"{value}%")
+                action.triggered.connect(
+                    lambda _checked=False, device=monitor.device, pct=value:
+                        self.set_tray_brightness(device, pct)
+                )
+
+            submenu.addSeparator()
+            off_action = submenu.addAction("Apagar monitor")
+            off_action.setEnabled(len(active) > 1)
+            if len(active) <= 1:
+                off_action.setToolTip("No se puede apagar la última pantalla activa.")
+            off_action.triggered.connect(
+                lambda _checked=False, device=monitor.device: self.disable_monitor_from_ui(device)
+            )
+
+        if disabled:
+            self.tray_menu.addSeparator()
+            for device, profile in disabled.items():
+                submenu = self.tray_menu.addMenu(
+                    f"{profile.get('name', device)} · apagado"
+                )
+                on_action = submenu.addAction("Encender monitor")
+                on_action.triggered.connect(
+                    lambda _checked=False, dev=device: self.enable_monitor_from_ui(dev)
+                )
+
+        self.tray_menu.addSeparator()
+        prefs = load_preferences()
+
+        startup_action = self.tray_menu.addAction("Iniciar con Windows")
+        startup_action.setCheckable(True)
+        startup_action.setChecked(startup_is_registered())
+        startup_action.toggled.connect(
+            lambda enabled: self.settings_page.start_with_windows.setChecked(enabled)
+        )
+
+        minimized_action = self.tray_menu.addAction("Iniciar minimizada")
+        minimized_action.setCheckable(True)
+        minimized_action.setChecked(bool(prefs.get("start_minimized", True)))
+        minimized_action.toggled.connect(
+            lambda enabled: self.settings_page.start_minimized.setChecked(enabled)
+        )
+
+        self.tray_menu.addSeparator()
+        update_action = self.tray_menu.addAction("Buscar actualizaciones")
+        update_action.triggered.connect(lambda: self.check_for_updates(manual=True))
+
+        quit_action = self.tray_menu.addAction("Salir")
+        quit_action.triggered.connect(self.quit_app)
 
     def show_from_tray(self) -> None:
         self.show()
