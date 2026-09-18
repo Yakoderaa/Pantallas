@@ -1,63 +1,112 @@
+<p align="center">
+  <img src="docs/images/pantallas-banner.svg" alt="Pantallas" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/Yakoderaa/Pantallas/actions/workflows/build-windows.yml"><img src="https://github.com/Yakoderaa/Pantallas/actions/workflows/build-windows.yml/badge.svg" alt="Windows build"></a>
+  <a href="https://github.com/Yakoderaa/Pantallas/actions/workflows/codeql.yml"><img src="https://github.com/Yakoderaa/Pantallas/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-5c89ff" alt="Windows">
+  <img src="https://img.shields.io/badge/license-Proprietary-786fff" alt="Proprietary license">
+</p>
+
 # Pantallas
 
-**Pantallas** es una aplicación de escritorio para Windows, escrita en Python, para visualizar y organizar monitores y mantener aplicaciones fijadas a una zona concreta de una pantalla.
+**Pantallas** is a native Windows desktop controller for multi-monitor setups.
+It centralizes brightness, monitor power, monitor naming and ordering, system
+tray shortcuts, and persistent window-position rules in one application.
 
-## V0.7
+The project is written in Python with PySide6 and uses Win32/DDC/CI APIs for
+hardware and desktop integration.
 
-- Detecta todos los monitores activos.
-- Muestra resolución, orientación, coordenadas y monitor principal.
-- La vista Control muestra también un mapa visible de la distribución actual.
-- Los monitores pueden reordenarse manualmente con **Subir** y **Bajar**; el orden se guarda y se reutiliza en menús y selectores.
-- Permite asignar nombres personalizados a los monitores; esos nombres se usan también en la bandeja y en la interfaz.
-- Control de brillo independiente mediante DDC/CI cuando el monitor lo soporta.
-- El apagado individual verifica si Windows realmente desactivó la salida. Si el controlador la deja activa, Pantallas usa el comando físico DDC/CI como respaldo y guarda el método utilizado para poder encenderla después.
-- Por defecto Pantallas nunca permite apagar la última pantalla activa y muestra un aviso al intentarlo.
-- En Configuración se puede permitir apagar todos los monitores, con una advertencia explícita antes de desactivar la protección.
-- Si se apaga la pantalla donde está abierta la aplicación, Pantallas se mueve antes a otra pantalla activa.
-- Las pantallas apagadas quedan disponibles para volver a encenderlas desde la aplicación o desde la bandeja.
-- Lista las ventanas abiertas y detecta en qué monitor están.
-- Crea reglas persistentes por aplicación/ventana.
-- Las reglas guardan monitor y geometría como porcentajes del área útil.
-- Un motor de reglas vuelve a colocar automáticamente las ventanas que se muevan.
-- Puede iniciarse automáticamente con Windows.
-- Puede iniciarse minimizada en la bandeja del sistema.
-- El icono de bandeja tiene menú contextual con accesos rápidos por monitor: abrir Pantallas ahí, brillo, apagar o encender.
-- La bandeja incluye un tic **Bloqueo de posiciones** para pausar o reactivar todas las restricciones de posición de aplicaciones.
-- Busca actualizaciones automáticamente al iniciar y cada 30 minutos mientras está abierta.
-- Incluye el botón **Buscar actualizaciones** dentro de la aplicación.
-- Las actualizaciones se descargan desde GitHub Releases, se validan por SHA-256, cierran Pantallas, se instalan silenciosamente y vuelven a abrir la aplicación.
+> **Current release line:** V0.8 — adaptive per-monitor power control,
+> professional Windows identity, hardened releases and reorganized
+> documentation.
 
-## Requisitos
+## Highlights
 
-- Windows 10 u 11.
-- Python 3.11 o superior recomendado.
-- Para control de brillo en monitores externos: DDC/CI habilitado en el menú del monitor.
-- Algunos monitores, docks, adaptadores DisplayLink, HDMI/DP y KVM no exponen DDC/CI; en esos casos el brillo puede no estar disponible.
+### Monitor control
 
-## Inicio con Windows
+- Detect active monitors and their resolution, orientation and Windows device.
+- Assign friendly names such as **Left**, **Center**, **Right**, or **Vertical**.
+- Reorder monitor cards independently from the Windows physical layout.
+- Control brightness independently when the monitor exposes DDC/CI.
+- Turn monitors off and restore them from the main window or system tray.
+- Protect the last usable display by default.
+- Optionally allow every monitor to be turned off after an explicit warning.
 
-En la pestaña **Configuración** podés activar **Iniciar Pantallas con Windows** y **Iniciar minimizada en la bandeja**.
+### Adaptive power engine
 
-También podés cambiar ambas opciones desde el menú contextual del icono de Pantallas en la bandeja de Windows.
+External monitors do not all implement power control the same way. Pantallas
+therefore learns **per monitor** instead of assuming one method works
+everywhere.
 
-## Menú rápido de bandeja
+Each monitor supports:
 
-Con clic derecho sobre el icono de Pantallas aparecen:
+- **Automatic** — learn and select the safest working method;
+- **Windows** — disable the Windows display output;
+- **DDC/CI** — use the monitor's MCCS power control directly.
 
-- **Abrir Pantallas**
-- Un submenú por cada monitor activo
-  - Abrir Pantallas ahí
-  - Brillo 25/50/75/100 %
-  - Apagar monitor
-- Un submenú por cada monitor apagado
-  - Encender monitor
-- **Bloqueo de posiciones** (tic global)
-- Iniciar con Windows
-- Iniciar minimizada
-- Buscar actualizaciones
-- Salir
+DDC commands are verified. An API success response is not accepted as proof
+that the panel actually turned off. If DDC turns a panel off but later fails to
+wake it, Automatic mode records that failure and prefers Windows for that
+monitor in future attempts.
 
-## Ejecutar desde Python
+See [Monitor power control](docs/POWER_CONTROL.md).
+
+### Window position rules
+
+Pantallas can bind applications such as Discord to a specific monitor and a
+specific percentage-based area.
+
+Examples:
+
+- full screen;
+- left or right half;
+- top or bottom half;
+- centered 70%;
+- fully custom percentage geometry.
+
+The system tray includes a global **Position lock** check mark. Clear it to
+pause every positioning restriction; check it again to resume enforcement.
+
+### Windows integration
+
+- Optional startup with Windows.
+- Optional minimized startup.
+- Native system tray menu.
+- Dedicated application identity for consistent taskbar grouping.
+- Unified Pantallas icon for installer, EXE, taskbar, Start menu and shortcuts.
+- Simplified icon optimized for the system tray.
+- Automatic release checking and in-app update installation.
+
+## Installation
+
+Download the latest **PantallasSetup.exe** from
+[GitHub Releases](https://github.com/Yakoderaa/Pantallas/releases).
+
+The installer uses a per-user installation under:
+
+```text
+%LOCALAPPDATA%\Programs\Pantallas
+```
+
+No administrator permission is required for the normal installation.
+
+Every official release also publishes:
+
+```text
+PantallasSetup.exe.sha256
+```
+
+Pantallas validates that checksum before launching an automatic update.
+
+## Running from source
+
+Requirements:
+
+- Windows 10 or Windows 11;
+- Python 3.11;
+- a monitor connection that exposes the required feature for DDC/CI controls.
 
 ```powershell
 git clone https://github.com/Yakoderaa/Pantallas.git
@@ -68,36 +117,113 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Para probar el inicio minimizado:
+Start minimized:
 
 ```powershell
 python app.py --minimized
 ```
 
-## Instalador y actualizaciones
+## Repository layout
 
-El workflow de GitHub Actions `build-windows.yml` genera `Pantallas.exe`, crea `PantallasSetup.exe` con Inno Setup y publica el instalador junto con su checksum SHA-256 en GitHub Releases.
+```text
+Pantallas/
+├─ .github/
+│  ├─ workflows/            Build/release and CodeQL
+│  ├─ ISSUE_TEMPLATE/       Structured bug reports
+│  ├─ CODEOWNERS
+│  └─ dependabot.yml
+├─ assets/
+│  └─ brand/                Source logo and tray identity
+├─ docs/
+│  ├─ images/               Documentation artwork
+│  ├─ ARCHITECTURE.md
+│  ├─ POWER_CONTROL.md
+│  └─ INTELLECTUAL_PROPERTY.md
+├─ installer/
+│  └─ Pantallas.iss         Inno Setup installer
+├─ pantallas/               Application package
+├─ tools/
+│  └─ generate_icons.py     Reproducible ICO/PNG generation
+├─ app.py
+├─ CHANGELOG.md
+├─ CONTRIBUTING.md
+├─ LICENSE
+├─ NOTICE.md
+├─ SECURITY.md
+└─ requirements.txt
+```
 
-Cada push nuevo a `main` genera un nuevo build publicable. La aplicación consulta la release más reciente y, si detecta un build superior al instalado, descarga `PantallasSetup.exe`, verifica el checksum y lanza el instalador después de cerrar la aplicación.
+## Build and release
 
-## Cómo crear una regla
+The Windows pipeline is intentionally split by privilege:
 
-1. Abrí **Ventanas y reglas**.
-2. Seleccioná la ventana, por ejemplo Discord.
-3. Elegí el monitor de destino.
-4. Indicá X, Y, ancho y alto en porcentajes o usá **Capturar posición actual**.
-5. Guardá la regla.
-6. Mientras **Bloqueo de posiciones** esté activo, Pantallas comprobará la posición y la restaurará cuando cambie.
+1. **Build job — read-only repository permission**
+   - install dependencies;
+   - generate Windows icons;
+   - compile/import smoke test;
+   - build PyInstaller `onedir`;
+   - verify the Python runtime and brand assets;
+   - build the Inno Setup installer;
+   - generate SHA-256;
+   - upload a CI artifact.
 
-## Notas sobre encendido y apagado
+2. **Release job — write permission only after a successful build**
+   - downloads the verified artifact;
+   - creates the GitHub Release;
+   - publishes installer + checksum.
 
-En V0.7 Pantallas intenta primero un standby DDC/CI reversible. Si el monitor no acepta control de energía por DDC, recién entonces intenta desactivar su salida desde Windows. Los estados DDC standby/suspend/off permanecen marcados como apagados aunque Windows siga conservando el monitor en su topología lógica. El método usado queda guardado junto con resolución, posición y orientación.
+See [Architecture](docs/ARCHITECTURE.md).
 
-Al volver a encender un monitor apagado por DDC/CI, Pantallas restaura primero la señal de Windows, fuerza un despertar, vuelve a adquirir handles DDC/CI nuevos y reintenta varias veces. Los nuevos apagados DDC usan standby (0x02) antes que deep-off (0x04) para conservar la capacidad de despertar. Los monitores guardados por versiones anteriores en deep-off reciben además una renegociación HDMI/DisplayPort. Esto mejora la compatibilidad con monitores que dejan de responder durante el reposo.
+## Security
 
-El control de **brillo** sigue usando DDC/CI.
+Pantallas includes:
 
+- CodeQL scanning;
+- Dependabot for Python and GitHub Actions;
+- CODEOWNERS;
+- least-privilege Actions jobs;
+- SHA-256 release checks;
+- a documented vulnerability-reporting process.
 
-## Recuperación de brillo
+Read [SECURITY.md](SECURITY.md) before reporting a security issue.
 
-Pantallas guarda el último brillo válido de cada monitor. Si DDC/CI tarda en volver después de encender una pantalla, la interfaz conserva ese valor en lugar de mostrar 0 o N/D y refresca el monitor varias veces hasta que el canal de control vuelve a responder.
+A checksum hosted in the same repository is **not** equivalent to Authenticode
+code signing. Signing official binaries with a certificate is a recommended
+future hardening step.
+
+## Monitor compatibility
+
+Brightness and physical power control depend on the monitor, cable, GPU,
+adapter, dock, KVM and firmware.
+
+A monitor may support brightness while not supporting a reliable software
+power cycle. Pantallas V0.8 specifically tracks those differences per monitor
+and lets the user force Windows or DDC/CI when required.
+
+## Intellectual property
+
+Pantallas is **source-available, not open-source**.
+
+Copyright © 2026 Yakoderaa. All rights reserved.
+
+The repository uses a proprietary license. Public access to the repository
+does not grant permission to copy, repackage, redistribute, rebrand or sell
+the application or its source.
+
+See [LICENSE](LICENSE), [NOTICE.md](NOTICE.md), and
+[Intellectual property](docs/INTELLECTUAL_PROPERTY.md).
+
+### Patent status
+
+Pantallas is **not represented as patented or patent pending**. Those rights
+require an actual filing with a competent patent authority; a README or GitHub
+notice cannot create them.
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Monitor power control](docs/POWER_CONTROL.md)
+- [Security policy](SECURITY.md)
+- [Intellectual property](docs/INTELLECTUAL_PROPERTY.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
