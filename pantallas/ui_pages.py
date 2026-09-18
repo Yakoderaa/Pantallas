@@ -36,12 +36,14 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .build_info import BUILD_ID
+from .brightness_cache import get_cached_brightness, set_cached_brightness
 from .models import MonitorInfo, WindowInfo
 from .monitor_aliases import (
     display_name_for_device,
     monitor_display_name,
     set_monitor_alias,
 )
+from .monitor_order import ensure_monitor_order, move_monitor, sort_monitors
 from .monitor_state import load_disabled_monitors, reconcile_active_devices
 from .preferences import (
     load_preferences,
@@ -164,6 +166,7 @@ class MonitorControlCard(Card):
     disable_requested = Signal(str)
     configure_requested = Signal(str)
     brightness_changed = Signal(str, int)
+    move_requested = Signal(str, int)
     renamed = Signal()
 
     def __init__(self, monitor: MonitorInfo, active_count: int) -> None:
@@ -191,16 +194,36 @@ class MonitorControlCard(Card):
         self.body.addLayout(row)
 
         brightness = get_monitor_brightness(monitor.handle)
+        cached = get_cached_brightness(monitor.device)
         if brightness is None:
-            self.slider.setEnabled(False)
-            self.value.setText("N/D")
-            self.slider.setToolTip("Este monitor no expone brillo por DDC/CI.")
+            if cached is None:
+                self.slider.setEnabled(False)
+                self.value.setText("N/D")
+                self.slider.setToolTip("Este monitor no expone brillo por DDC/CI.")
+            else:
+                self.slider.setValue(cached)
+                self.value.setText(f"{cached}%")
+                self.slider.setToolTip(
+                    "Último brillo conocido. DDC/CI puede estar reconectando."
+                )
+                self.slider.sliderReleased.connect(self._brightness_released)
         else:
+            set_cached_brightness(monitor.device, brightness)
             self.slider.setValue(brightness)
             self.value.setText(f"{brightness}%")
             self.slider.sliderReleased.connect(self._brightness_released)
 
         actions = QHBoxLayout()
+        move_up = QPushButton("Subir")
+        move_up.setToolTip("Mover este monitor hacia arriba en la lista.")
+        move_up.clicked.connect(
+            lambda: self.move_requested.emit(self.monitor.device, -1)
+        )
+        move_down = QPushButton("Bajar")
+        move_down.setToolTip("Mover este monitor hacia abajo en la lista.")
+        move_down.clicked.connect(
+            lambda: self.move_requested.emit(self.monitor.device, 1)
+        )
         rename = QPushButton("Cambiar nombre")
         rename.clicked.connect(self._rename)
         configure = QPushButton("Configurar")
@@ -208,11 +231,12 @@ class MonitorControlCard(Card):
             lambda: self.configure_requested.emit(self.monitor.device)
         )
         disable = danger_button("Apagar")
-        disable.setEnabled(active_count > 1)
         disable.setToolTip(
-            "" if active_count > 1 else "No se puede apagar la última pantalla activa."
+            "Si es el último monitor activo, Pantallas mostrará la protección configurada."
         )
         disable.clicked.connect(lambda: self.disable_requested.emit(self.monitor.device))
+        actions.addWidget(move_up)
+        actions.addWidget(move_down)
         actions.addWidget(rename)
         actions.addWidget(configure)
         actions.addWidget(disable)
@@ -259,6 +283,16 @@ class MonitorsPage(QWidget):
         h.addWidget(refresh)
         outer.addWidget(header)
 
+        preview_card = Card(
+            "Distribución actual",
+            "Vista rápida de cómo Windows tiene ubicados los monitores.",
+        )
+        self.preview = MonitorCanvas()
+        self.preview.setMinimumHeight(230)
+        self.preview.setMaximumHeight(280)
+        preview_card.body.addWidget(self.preview)
+        outer.addWidget(preview_card)
+
         container = QWidget()
         self.body = QVBoxLayout(container)
         self.body.setContentsMargins(0, 0, 8, 0)
@@ -276,8 +310,16 @@ class MonitorsPage(QWidget):
     def refresh(self) -> None:
         self._clear()
         all_monitors = enum_monitors()
+        ensure_monitor_order(all_monitors)
         disabled = reconcile_active_devices({m.device for m in all_monitors})
-        monitors = [m for m in all_monitors if m.device not in disabled]
+        monitors = sort_monitors(
+            [m for m in all_monitors if m.device not in disabled]
+        )
+        self.current_monitors = monitors
+        self.preview.load_monitors(monitors)
+        for item in self.preview.items_by_device.values():
+            item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, False)
+            item.setCursor(Qt.CursorShape.ArrowCursor)
 
         if not monitors:
             empty = Card("No se detectaron monitores activos")
@@ -291,6 +333,7 @@ class MonitorsPage(QWidget):
                 card.disable_requested.connect(self.disable_requested)
                 card.configure_requested.connect(self.configure_requested)
                 card.brightness_changed.connect(self._set_brightness)
+                card.move_requested.connect(self._move_monitor)
                 card.renamed.connect(self._renamed)
                 self.body.addWidget(card)
 
@@ -323,6 +366,12 @@ class MonitorsPage(QWidget):
         self.status.emit("Nombre del monitor actualizado.")
         self.refresh()
 
+    def _move_monitor(self, device: str, direction: int) -> None:
+        all_monitors = enum_monitors()
+        if move_monitor(device, direction, all_monitors):
+            self.status.emit("Orden de monitores actualizado.")
+            self.refresh()
+
     def _set_brightness(self, device: str, value: int) -> None:
         monitor = next((m for m in enum_monitors() if m.device == device), None)
         if monitor is None:
@@ -330,10 +379,16 @@ class MonitorsPage(QWidget):
             self.refresh()
             return
         if set_monitor_brightness(monitor.handle, value):
-            self.status.emit(f"Brillo de {monitor.name}: {value}%")
+            set_cached_brightness(device, value)
+            self.status.emit(f"Brillo de {monitor_display_name(monitor)}: {value}%")
         else:
-            self.status.emit(f"{monitor.name} rechazó el cambio de brillo.")
-            self.refresh()
+            cached = get_cached_brightness(device)
+            self.status.emit(
+                f"{monitor_display_name(monitor)} todavía no responde por DDC/CI."
+            )
+            if cached is not None:
+                set_cached_brightness(device, cached)
+            QTimer.singleShot(1400, self.refresh)
 
 
 class MonitorItem(QGraphicsRectItem):
@@ -1035,6 +1090,23 @@ class SettingsPage(QWidget):
         startup.body.addWidget(self.close_to_tray)
         root.addWidget(startup)
 
+        safety = Card(
+            "Seguridad de monitores",
+            "Por defecto Pantallas impide apagar la última pantalla activa.",
+        )
+        self.allow_all_off = QCheckBox("Permitir apagar todos los monitores")
+        self.allow_all_off.setChecked(bool(prefs["allow_all_monitors_off"]))
+        safety_note = QLabel(
+            "Desactivar esta protección puede dejarte sin ninguna pantalla visible. "
+            "Para recuperarlas podrías necesitar usar el botón físico del monitor "
+            "o reiniciar Windows."
+        )
+        safety_note.setObjectName("Muted")
+        safety_note.setWordWrap(True)
+        safety.body.addWidget(self.allow_all_off)
+        safety.body.addWidget(safety_note)
+        root.addWidget(safety)
+
         updates = Card("Actualizaciones")
         self.auto_updates = QCheckBox("Buscar actualizaciones automáticamente")
         self.auto_updates.setChecked(bool(prefs["auto_updates"]))
@@ -1055,6 +1127,7 @@ class SettingsPage(QWidget):
         self.auto_updates.toggled.connect(
             lambda value: self._save("auto_updates", value)
         )
+        self.allow_all_off.toggled.connect(self._allow_all_off_changed)
         root.addStretch()
 
     def _startup_changed(self, enabled: bool) -> None:
@@ -1087,6 +1160,32 @@ class SettingsPage(QWidget):
             "Inicio minimizado activado."
             if enabled
             else "Pantallas se abrirá visible al iniciar."
+        )
+        self.preferences_changed.emit()
+
+    def _allow_all_off_changed(self, enabled: bool) -> None:
+        if enabled:
+            answer = QMessageBox.warning(
+                self,
+                "Advertencia: podrías quedarte sin pantalla",
+                "Si permitís apagar todos los monitores, Pantallas ya no podrá "
+                "garantizar que quede una pantalla visible para volver a abrirlos.\n\n"
+                "Podrías necesitar encender un monitor físicamente o reiniciar Windows.\n\n"
+                "¿Querés desactivar igualmente la protección?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.allow_all_off.blockSignals(True)
+                self.allow_all_off.setChecked(False)
+                self.allow_all_off.blockSignals(False)
+                return
+
+        save_preferences(allow_all_monitors_off=enabled)
+        self.status.emit(
+            "Protección del último monitor desactivada."
+            if enabled
+            else "Protección del último monitor activada."
         )
         self.preferences_changed.emit()
 
