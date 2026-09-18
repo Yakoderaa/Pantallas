@@ -112,7 +112,7 @@ jobs:
 
     steps:
       - name: Descargar artefacto verificado
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: Pantallas-Windows-build-${{ github.run_number }}
           path: release
