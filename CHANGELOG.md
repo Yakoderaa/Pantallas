@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.2
+
+- Fixes the startup crash caused by residual `reconcile_active_devices` references.
+- Corrects the argument type passed to `reconcile_monitors` in monitor views.
+- CI now instantiates the real MainWindow and refreshes the UI in offscreen mode, so runtime initialization errors fail the build instead of reaching users.
+
 ## 0.8.1
 
 - Clears stale DDC off-state automatically when a monitor is physically awake again.
