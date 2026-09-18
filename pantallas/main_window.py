@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .build_info import BUILD_ID
+from .monitor_aliases import display_name_for_device, monitor_display_name
 from .monitor_state import (
     load_disabled_monitors,
     reconcile_active_devices,
@@ -36,8 +37,7 @@ from .preferences import (
 from .rules import RuleEnforcer, RuleStore
 from .ui_pages import (
     DashboardPage,
-    LayoutPage,
-    MonitorsPage,
+    MonitorsWorkspacePage,
     RulesPage,
     SettingsPage,
     UpdatesPage,
@@ -56,7 +56,6 @@ class MainWindow(QMainWindow):
     PAGE_ORDER = (
         ("home", "Inicio"),
         ("monitors", "Monitores"),
-        ("layout", "Distribución"),
         ("windows", "Ventanas y reglas"),
         ("updates", "Actualizaciones"),
         ("settings", "Configuración"),
@@ -144,8 +143,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.pages: dict[str, QWidget] = {
             "home": DashboardPage(),
-            "monitors": MonitorsPage(),
-            "layout": LayoutPage(),
+            "monitors": MonitorsWorkspacePage(),
             "windows": RulesPage(self.store, self.enforcer),
             "updates": UpdatesPage(),
             "settings": SettingsPage(),
@@ -177,8 +175,7 @@ class MainWindow(QMainWindow):
 
     def _wire_pages(self) -> None:
         dashboard: DashboardPage = self.pages["home"]
-        monitors: MonitorsPage = self.pages["monitors"]
-        layout: LayoutPage = self.pages["layout"]
+        monitors: MonitorsWorkspacePage = self.pages["monitors"]
         rules: RulesPage = self.pages["windows"]
         updates: UpdatesPage = self.pages["updates"]
         settings: SettingsPage = self.pages["settings"]
@@ -188,10 +185,8 @@ class MainWindow(QMainWindow):
 
         monitors.disable_requested.connect(self.disable_monitor_from_ui)
         monitors.enable_requested.connect(self.enable_monitor_from_ui)
-        monitors.configure_requested.connect(self.open_monitor_config)
         monitors.status.connect(self._status)
 
-        layout.status.connect(self._status)
         rules.status.connect(self._status)
 
         updates.check_requested.connect(
@@ -202,6 +197,14 @@ class MainWindow(QMainWindow):
         settings.preferences_changed.connect(self._settings_changed)
 
     def navigate(self, page: str) -> None:
+        if page == "monitor-layout":
+            widget = self.pages["monitors"]
+            self.stack.setCurrentWidget(widget)
+            self.nav_buttons["monitors"].setChecked(True)
+            workspace: MonitorsWorkspacePage = self.pages["monitors"]
+            workspace.show_layout()
+            return
+
         widget = self.pages.get(page)
         if widget is None:
             return
@@ -213,16 +216,14 @@ class MainWindow(QMainWindow):
         if page == "home":
             self.pages["home"].refresh_view(self.store)
         elif page == "monitors":
-            self.pages["monitors"].refresh()
-        elif page == "layout":
-            self.pages["layout"].refresh()
+            workspace: MonitorsWorkspacePage = self.pages["monitors"]
+            workspace.show_controls()
         elif page == "windows":
             self.pages["windows"].refresh_windows()
 
     def refresh_all(self) -> None:
         self.pages["home"].refresh_view(self.store)
         self.pages["monitors"].refresh()
-        self.pages["layout"].refresh()
         self.pages["windows"].refresh_monitors()
 
     def _status(self, message: str) -> None:
@@ -260,12 +261,18 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
     def open_monitor_config(self, device: str) -> None:
-        self.navigate("layout")
-        page: LayoutPage = self.pages["layout"]
-        page.select_monitor(device)
+        self.stack.setCurrentWidget(self.pages["monitors"])
+        self.nav_buttons["monitors"].setChecked(True)
+        workspace: MonitorsWorkspacePage = self.pages["monitors"]
+        workspace.show_layout_for(device)
+
+    def _effective_active_monitors(self):
+        all_monitors = enum_monitors()
+        disabled = reconcile_active_devices({m.device for m in all_monitors})
+        return [m for m in all_monitors if m.device not in disabled]
 
     def disable_monitor_from_ui(self, device: str) -> None:
-        active = enum_monitors()
+        active = self._effective_active_monitors()
         target = next((m for m in active if m.device == device), None)
         if target is None:
             self._status("La pantalla seleccionada ya no está activa.")
@@ -289,11 +296,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No se pudo apagar", message)
             return
 
+        profile["name"] = monitor_display_name(target)
         save_disabled_monitor(profile)
         self._status(message)
         self.tray.showMessage(
             "Monitor apagado",
-            f"{target.name} quedó desactivado. Podés encenderlo desde Pantallas o la bandeja.",
+            f"{monitor_display_name(target)} quedó apagado. Podés encenderlo desde Pantallas o la bandeja.",
             QSystemTrayIcon.MessageIcon.Information,
             3500,
         )
@@ -328,13 +336,14 @@ class MainWindow(QMainWindow):
             return
 
         if set_monitor_brightness(monitor.handle, percent):
-            self._status(f"Brillo de {monitor.name}: {percent}%")
+            self._status(f"Brillo de {monitor_display_name(monitor)}: {percent}%")
             if self.stack.currentWidget() is self.pages["monitors"]:
-                self.pages["monitors"].refresh()
+                workspace: MonitorsWorkspacePage = self.pages["monitors"]
+                workspace.controls.refresh()
         else:
             self.tray.showMessage(
                 "Brillo no disponible",
-                f"{monitor.name} no aceptó el cambio por DDC/CI.",
+                f"{monitor_display_name(monitor)} no aceptó el cambio por DDC/CI.",
                 QSystemTrayIcon.MessageIcon.Warning,
                 3000,
             )
@@ -346,11 +355,12 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.show_from_tray)
         self.tray_menu.addSeparator()
 
-        active = enum_monitors()
-        disabled = reconcile_active_devices({m.device for m in active})
+        all_monitors = enum_monitors()
+        disabled = reconcile_active_devices({m.device for m in all_monitors})
+        active = [m for m in all_monitors if m.device not in disabled]
 
         for monitor in active:
-            label = monitor.name
+            label = monitor_display_name(monitor)
             if monitor.primary:
                 label += " · principal"
             submenu = self.tray_menu.addMenu(label)
@@ -378,7 +388,7 @@ class MainWindow(QMainWindow):
 
         for device, profile in disabled.items():
             submenu = self.tray_menu.addMenu(
-                f"{profile.get('name', device)} · apagado"
+                f"{display_name_for_device(device, str(profile.get('name', device)))} · apagado"
             )
             on = submenu.addAction("Encender monitor")
             on.triggered.connect(
