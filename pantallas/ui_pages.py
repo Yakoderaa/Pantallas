@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from functools import partial
 
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -11,10 +10,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
-    QGraphicsRectItem,
-    QGraphicsScene,
-    QGraphicsSimpleTextItem,
-    QGraphicsView,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -29,7 +24,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -45,6 +39,7 @@ from .monitor_aliases import (
 )
 from .monitor_order import ensure_monitor_order, move_monitor, sort_monitors
 from .monitor_state import load_disabled_monitors, reconcile_active_devices
+from .power_profiles import get_power_preference, set_power_preference
 from .preferences import (
     load_preferences,
     save_preferences,
@@ -54,7 +49,6 @@ from .preferences import (
 from .rules import RuleEnforcer, RuleStore
 from .ui_theme import Card, StatCard, danger_button, primary_button
 from .windows_api import (
-    apply_monitor_layout,
     enum_monitors,
     enum_windows,
     get_monitor_brightness,
@@ -211,6 +205,26 @@ class MonitorControlCard(Card):
             self.value.setText(f"{brightness}%")
             self.slider.sliderReleased.connect(self._brightness_released)
 
+        power_row = QHBoxLayout()
+        power_label = QLabel("Método de apagado")
+        self.power_method = QComboBox()
+        self.power_method.addItem("Automático", "auto")
+        self.power_method.addItem("Windows", "windows")
+        self.power_method.addItem("DDC/CI", "ddc")
+        current_method = get_power_preference(monitor.device)
+        index = self.power_method.findData(current_method)
+        if index >= 0:
+            self.power_method.setCurrentIndex(index)
+        self.power_method.setToolTip(
+            "Automático aprende qué método funciona mejor para este monitor. "
+            "Usá Windows si el monitor se apaga por DDC pero después no despierta."
+        )
+        self.power_method.currentIndexChanged.connect(self._power_method_changed)
+        power_row.addWidget(power_label)
+        power_row.addWidget(self.power_method)
+        power_row.addStretch()
+        self.body.addLayout(power_row)
+
         actions = QHBoxLayout()
         move_up = QPushButton("Subir")
         move_up.setToolTip("Mover este monitor hacia arriba en la lista.")
@@ -240,6 +254,10 @@ class MonitorControlCard(Card):
         value = self.slider.value()
         self.value.setText(f"{value}%")
         self.brightness_changed.emit(self.monitor.device, value)
+
+    def _power_method_changed(self) -> None:
+        method = str(self.power_method.currentData() or "auto")
+        set_power_preference(self.monitor.device, method)
 
     def _rename(self) -> None:
         current = monitor_display_name(self.monitor)
@@ -275,16 +293,6 @@ class MonitorsPage(QWidget):
         h.addWidget(refresh)
         outer.addWidget(header)
 
-        preview_card = Card(
-            "Distribución actual",
-            "Vista rápida de cómo Windows tiene ubicados los monitores.",
-        )
-        self.preview = MonitorCanvas()
-        self.preview.setMinimumHeight(230)
-        self.preview.setMaximumHeight(280)
-        preview_card.body.addWidget(self.preview)
-        outer.addWidget(preview_card)
-
         container = QWidget()
         self.body = QVBoxLayout(container)
         self.body.setContentsMargins(0, 0, 8, 0)
@@ -308,10 +316,6 @@ class MonitorsPage(QWidget):
             [m for m in all_monitors if m.device not in disabled]
         )
         self.current_monitors = monitors
-        self.preview.load_monitors(monitors)
-        for item in self.preview.items_by_device.values():
-            item.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, False)
-            item.setCursor(Qt.CursorShape.ArrowCursor)
 
         if not monitors:
             empty = Card("No se detectaron monitores activos")
@@ -380,296 +384,6 @@ class MonitorsPage(QWidget):
             if cached is not None:
                 set_cached_brightness(device, cached)
             QTimer.singleShot(1400, self.refresh)
-
-
-class MonitorItem(QGraphicsRectItem):
-    def __init__(self, monitor: MonitorInfo, scale: float, select_cb, moved_cb) -> None:
-        super().__init__()
-        self.monitor = monitor
-        self.scale_factor = scale
-        self.select_cb = select_cb
-        self.moved_cb = moved_cb
-        self.pending_orientation = monitor.orientation
-
-        self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, True)
-        self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, True)
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
-
-        self.label = QGraphicsSimpleTextItem(self)
-        self.label.setBrush(QColor("#f4f7fb"))
-        font = QFont("Segoe UI", 9)
-        font.setBold(True)
-        self.label.setFont(font)
-        self.update_geometry(monitor.orientation)
-        self.set_selected_visual(False)
-
-    def update_geometry(self, orientation: int) -> None:
-        self.pending_orientation = orientation
-        width, height = self.monitor.width, self.monitor.height
-        if (self.monitor.orientation // 90) % 2 != (orientation // 90) % 2:
-            width, height = height, width
-        sw = max(125.0, width * self.scale_factor)
-        sh = max(82.0, height * self.scale_factor)
-        self.setRect(0, 0, sw, sh)
-        main = " · PRINCIPAL" if self.monitor.primary else ""
-        self.label.setText(
-            f"{monitor_display_name(self.monitor)}{main}\n{width} × {height}\n"
-            f"{orientation_label(orientation)}"
-        )
-        self.label.setPos(12, 10)
-
-    def set_selected_visual(self, selected: bool) -> None:
-        self.setPen(QPen(QColor("#6f96ff" if selected else "#343c4a"), 3 if selected else 2))
-        self.setBrush(QColor("#1d315d" if selected else "#171d27"))
-
-    def mousePressEvent(self, event) -> None:
-        self.setCursor(Qt.CursorShape.ClosedHandCursor)
-        self.select_cb(self.monitor.device)
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
-        super().mouseReleaseEvent(event)
-        self.moved_cb(self.monitor.device)
-
-
-def orientation_label(degrees: int) -> str:
-    return {
-        0: "Horizontal",
-        90: "Vertical",
-        180: "Horizontal invertida",
-        270: "Vertical invertida",
-    }.get(degrees, f"{degrees}°")
-
-
-class MonitorCanvas(QGraphicsView):
-    selected = Signal(str)
-    moved = Signal(str)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.scene_obj = QGraphicsScene(self)
-        self.setScene(self.scene_obj)
-        self.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.setBackgroundBrush(QColor("#0a0c11"))
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setMinimumHeight(500)
-        self.scale_factor = 0.13
-        self.origin = QPointF(700, 460)
-        self.items_by_device: dict[str, MonitorItem] = {}
-        self.monitors: list[MonitorInfo] = []
-        self.scene_obj.setSceneRect(-1300, -900, 4000, 2700)
-
-    def load_monitors(self, monitors: list[MonitorInfo]) -> None:
-        self.scene_obj.clear()
-        self.items_by_device.clear()
-        self.monitors = monitors
-        for monitor in monitors:
-            item = MonitorItem(
-                monitor,
-                self.scale_factor,
-                self._select_from_item,
-                self._moved_from_item,
-            )
-            item.setPos(
-                self.origin.x() + monitor.left * self.scale_factor,
-                self.origin.y() + monitor.top * self.scale_factor,
-            )
-            self.scene_obj.addItem(item)
-            self.items_by_device[monitor.device] = item
-
-        if monitors:
-            self.select_device(monitors[0].device)
-            bounds = self.scene_obj.itemsBoundingRect().adjusted(-90, -90, 90, 90)
-            self.fitInView(bounds, Qt.AspectRatioMode.KeepAspectRatio)
-
-    def _select_from_item(self, device: str) -> None:
-        self.select_device(device)
-        self.selected.emit(device)
-
-    def _moved_from_item(self, device: str) -> None:
-        self.moved.emit(device)
-
-    def select_device(self, device: str) -> None:
-        for dev, item in self.items_by_device.items():
-            item.set_selected_visual(dev == device)
-
-    def _primary_item(self) -> MonitorItem | None:
-        return next(
-            (item for item in self.items_by_device.values() if item.monitor.primary),
-            None,
-        )
-
-    def pending_position(self, device: str) -> tuple[int, int]:
-        item = self.items_by_device[device]
-        primary = self._primary_item()
-        anchor = primary.pos() if primary is not None else self.origin
-        return (
-            round((item.pos().x() - anchor.x()) / self.scale_factor),
-            round((item.pos().y() - anchor.y()) / self.scale_factor),
-        )
-
-    def set_pending_position(self, device: str, x: int, y: int) -> None:
-        item = self.items_by_device[device]
-        primary = self._primary_item()
-        anchor = primary.pos() if primary is not None else self.origin
-        item.setPos(
-            anchor.x() + int(x) * self.scale_factor,
-            anchor.y() + int(y) * self.scale_factor,
-        )
-
-    def set_pending_orientation(self, device: str, orientation: int) -> None:
-        item = self.items_by_device.get(device)
-        if item:
-            item.update_geometry(orientation)
-
-    def layout_payload(self) -> list[dict[str, int | str]]:
-        result = []
-        for monitor in self.monitors:
-            item = self.items_by_device[monitor.device]
-            x, y = self.pending_position(monitor.device)
-            result.append(
-                {
-                    "device": monitor.device,
-                    "x": x,
-                    "y": y,
-                    "orientation": item.pending_orientation,
-                }
-            )
-        return result
-
-
-class LayoutPage(QWidget):
-    status = Signal(str)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.monitors: list[MonitorInfo] = []
-        self.selected_device = ""
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(26, 24, 26, 24)
-        root.setSpacing(14)
-        header, h = _page_header(
-            "Distribución",
-            "Arrastrá las pantallas como están físicamente en tu escritorio.",
-        )
-        refresh = QPushButton("Restablecer vista")
-        refresh.clicked.connect(self.refresh)
-        self.apply_button = primary_button("Aplicar en Windows")
-        self.apply_button.clicked.connect(self.apply_layout)
-        h.addWidget(refresh)
-        h.addWidget(self.apply_button)
-        root.addWidget(header)
-
-        row = QHBoxLayout()
-        self.canvas = MonitorCanvas()
-        row.addWidget(self.canvas, 1)
-
-        inspector = Card("Pantalla seleccionada")
-        inspector.setFixedWidth(315)
-        self.name = QLabel("—")
-        self.name.setStyleSheet("font-size: 13pt; font-weight: 750;")
-        self.meta = QLabel("—")
-        self.meta.setObjectName("Muted")
-        self.meta.setWordWrap(True)
-        inspector.body.addWidget(self.name)
-        inspector.body.addWidget(self.meta)
-
-        form = QFormLayout()
-        self.orientation = QComboBox()
-        for label, degrees in (
-            ("Horizontal", 0),
-            ("Vertical", 90),
-            ("Horizontal invertida", 180),
-            ("Vertical invertida", 270),
-        ):
-            self.orientation.addItem(label, degrees)
-        self.x = QSpinBox()
-        self.x.setRange(-20000, 20000)
-        self.y = QSpinBox()
-        self.y.setRange(-20000, 20000)
-        form.addRow("Orientación", self.orientation)
-        form.addRow("X", self.x)
-        form.addRow("Y", self.y)
-        inspector.body.addLayout(form)
-
-        hint = QLabel(
-            "Consejo: alineá visualmente los bordes para que el mouse pase entre "
-            "monitores exactamente donde esperás."
-        )
-        hint.setObjectName("Muted")
-        hint.setWordWrap(True)
-        inspector.body.addWidget(hint)
-        inspector.body.addStretch()
-        row.addWidget(inspector)
-        root.addLayout(row, 1)
-
-        self.canvas.selected.connect(self.select_monitor)
-        self.canvas.moved.connect(self.sync_controls)
-        self.orientation.currentIndexChanged.connect(self.orientation_changed)
-        self.x.editingFinished.connect(self.position_changed)
-        self.y.editingFinished.connect(self.position_changed)
-        self.refresh()
-
-    def refresh(self) -> None:
-        self.monitors = enum_monitors()
-        self.canvas.load_monitors(self.monitors)
-        self.apply_button.setEnabled(bool(self.monitors))
-        if self.monitors:
-            target = self.selected_device
-            if not any(m.device == target for m in self.monitors):
-                target = self.monitors[0].device
-            self.select_monitor(target)
-
-    def select_monitor(self, device: str) -> None:
-        monitor = next((m for m in self.monitors if m.device == device), None)
-        if monitor is None:
-            return
-        self.selected_device = device
-        self.canvas.select_device(device)
-        self.name.setText(monitor_display_name(monitor))
-        self.meta.setText(
-            f"{monitor.width} × {monitor.height} · {monitor.device}"
-            + (" · Principal" if monitor.primary else "")
-        )
-        idx = self.orientation.findData(
-            self.canvas.items_by_device[device].pending_orientation
-        )
-        self.orientation.blockSignals(True)
-        self.orientation.setCurrentIndex(max(0, idx))
-        self.orientation.blockSignals(False)
-        self.sync_controls(device)
-
-    def sync_controls(self, _device: str = "") -> None:
-        if not self.selected_device:
-            return
-        x, y = self.canvas.pending_position(self.selected_device)
-        self.x.setValue(x)
-        self.y.setValue(y)
-
-    def orientation_changed(self) -> None:
-        if self.selected_device:
-            self.canvas.set_pending_orientation(
-                self.selected_device,
-                int(self.orientation.currentData()),
-            )
-
-    def position_changed(self) -> None:
-        if self.selected_device:
-            self.canvas.set_pending_position(
-                self.selected_device,
-                self.x.value(),
-                self.y.value(),
-            )
-
-    def apply_layout(self) -> None:
-        ok, message = apply_monitor_layout(self.canvas.layout_payload())
-        self.status.emit(message)
-        if not ok:
-            QMessageBox.warning(self, "No se pudo aplicar", message)
-        else:
-            QTimer.singleShot(1000, self.refresh)
 
 
 class MonitorsWorkspacePage(QWidget):
