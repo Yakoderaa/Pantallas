@@ -38,7 +38,7 @@ from .monitor_aliases import (
     set_monitor_alias,
 )
 from .monitor_order import ensure_monitor_order, move_monitor, sort_monitors
-from .monitor_state import load_disabled_monitors, reconcile_active_devices
+from .monitor_state import load_disabled_monitors, reconcile_monitors
 from .power_profiles import get_power_preference, set_power_preference
 from .preferences import (
     load_preferences,
@@ -136,7 +136,7 @@ class DashboardPage(QWidget):
 
     def refresh_view(self, store: RuleStore) -> None:
         all_monitors = enum_monitors()
-        disabled = reconcile_active_devices({m.device for m in all_monitors})
+        disabled = reconcile_monitors(all_monitors)
         monitors = [m for m in all_monitors if m.device not in disabled]
         active_rules = sum(1 for rule in store.rules if rule.enabled)
         startup = startup_is_registered()
@@ -276,6 +276,7 @@ class MonitorControlCard(Card):
 class MonitorsPage(QWidget):
     disable_requested = Signal(str)
     enable_requested = Signal(str)
+    mark_on_requested = Signal(str)
     status = Signal(str)
 
     def __init__(self) -> None:
@@ -347,7 +348,16 @@ class MonitorsPage(QWidget):
                 turn_on.clicked.connect(
                     lambda _=False, dev=device: self.enable_requested.emit(dev)
                 )
+                already_on = QPushButton("Ya está encendido")
+                already_on.setToolTip(
+                    "Usalo si el monitor está físicamente encendido pero Pantallas "
+                    "todavía conserva un estado de apagado anterior."
+                )
+                already_on.clicked.connect(
+                    lambda _=False, dev=device: self.mark_on_requested.emit(dev)
+                )
                 row.addWidget(turn_on)
+                row.addWidget(already_on)
                 row.addStretch()
                 card.body.addLayout(row)
                 self.body.addWidget(card)
@@ -389,6 +399,7 @@ class MonitorsPage(QWidget):
 class MonitorsWorkspacePage(QWidget):
     disable_requested = Signal(str)
     enable_requested = Signal(str)
+    mark_on_requested = Signal(str)
     status = Signal(str)
 
     def __init__(self) -> None:
@@ -400,6 +411,7 @@ class MonitorsWorkspacePage(QWidget):
 
         self.controls.disable_requested.connect(self.disable_requested)
         self.controls.enable_requested.connect(self.enable_requested)
+        self.controls.mark_on_requested.connect(self.mark_on_requested)
         self.controls.status.connect(self.status)
 
     def refresh(self) -> None:
