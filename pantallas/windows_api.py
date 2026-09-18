@@ -258,12 +258,12 @@ def _wake_windows_displays() -> None:
         pass
 
 
-def disable_monitor(device: str) -> tuple[bool, str, dict | None]:
+def disable_monitor(device: str, *, allow_last: bool = False) -> tuple[bool, str, dict | None]:
     active = enum_monitors()
     monitor = next((m for m in active if m.device == device), None)
     if monitor is None:
         return False, "La pantalla seleccionada ya no está activa.", None
-    if len(active) <= 1:
+    if len(active) <= 1 and not allow_last:
         return False, "No se puede apagar la última pantalla activa.", None
 
     try:
