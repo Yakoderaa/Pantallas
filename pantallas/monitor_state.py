@@ -55,7 +55,11 @@ def reconcile_active_devices(active_devices: set[str]) -> dict[str, dict]:
     state = load_disabled_monitors()
     changed = False
     for device in list(state):
-        if device in active_devices:
+        profile = state.get(device, {})
+        mode = str(profile.get("mode", "windows_disabled"))
+        # A DDC-off monitor intentionally remains present in the Windows topology.
+        # Do not clear that state just because EnumDisplayMonitors still sees it.
+        if device in active_devices and mode != "ddc_off":
             state.pop(device, None)
             changed = True
     if changed:
@@ -64,3 +68,7 @@ def reconcile_active_devices(active_devices: set[str]) -> dict[str, dict]:
             encoding="utf-8",
         )
     return state
+
+
+def marked_off_devices() -> set[str]:
+    return set(load_disabled_monitors())
