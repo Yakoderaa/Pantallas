@@ -18,6 +18,7 @@ DEFAULTS: dict[str, bool] = {
     "close_to_tray": True,
     "auto_updates": True,
     "allow_all_monitors_off": False,
+    "position_lock_enabled": True,
 }
 
 
