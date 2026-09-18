@@ -36,8 +36,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__
+from .build_info import BUILD_ID
 from .models import MonitorInfo, WindowInfo
 from .rules import RuleEnforcer, RuleStore
+from .update_service import UpdateWorker, launch_installer_after_exit
 from .windows_api import (
     apply_monitor_layout,
     enum_monitors,
@@ -819,6 +822,27 @@ class MainWindow(QMainWindow):
         self.rules_page.status.connect(self.statusBar().showMessage)
         self.statusBar().showMessage("Listo")
 
+        self.version_label = QLabel(
+            f"v{__version__} · build {BUILD_ID}" if BUILD_ID else f"v{__version__} · desarrollo"
+        )
+        self.version_label.setStyleSheet("color: #8b949e; padding: 0 8px;")
+        self.update_button = QPushButton("Buscar actualizaciones")
+        self.update_button.setToolTip(
+            "Descarga la última versión, cierra Pantallas, la instala y vuelve a abrirla."
+        )
+        self.statusBar().addPermanentWidget(self.version_label)
+        self.statusBar().addPermanentWidget(self.update_button)
+
+        self._update_worker: UpdateWorker | None = None
+        self._update_manual = False
+        self.update_button.clicked.connect(lambda: self.check_for_updates(manual=True))
+
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(30 * 60 * 1000)
+        self.update_timer.timeout.connect(lambda: self.check_for_updates(manual=False))
+        self.update_timer.start()
+        QTimer.singleShot(5000, lambda: self.check_for_updates(manual=False))
+
         self._really_quit = False
         self.tray = QSystemTrayIcon(self)
         tray_icon: QIcon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
@@ -835,6 +859,67 @@ class MainWindow(QMainWindow):
         self.tray.activated.connect(self.tray_activated)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        if self._update_worker is not None and self._update_worker.isRunning():
+            if manual:
+                self.statusBar().showMessage("Ya hay una comprobación de actualización en curso.")
+            return
+
+        self._update_manual = manual
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Buscando…")
+
+        worker = UpdateWorker(self)
+        self._update_worker = worker
+        worker.status.connect(self._update_status)
+        worker.progress.connect(self._update_progress)
+        worker.no_update.connect(self._no_update_available)
+        worker.installer_ready.connect(self._installer_ready)
+        worker.failed.connect(self._update_failed)
+        worker.finished.connect(self._update_finished)
+        worker.start()
+
+    def _update_status(self, message: str) -> None:
+        self.statusBar().showMessage(message)
+
+    def _update_progress(self, percent: int) -> None:
+        self.update_button.setText(f"Descargando {percent}%")
+
+    def _no_update_available(self, latest_build: int) -> None:
+        message = "Pantallas ya está actualizado."
+        if BUILD_ID:
+            message += f" Build actual: {BUILD_ID}."
+        self.statusBar().showMessage(message, 5000)
+        if self._update_manual:
+            QMessageBox.information(self, "Sin actualizaciones", message)
+
+    def _update_failed(self, message: str) -> None:
+        self.statusBar().showMessage(f"Actualización: {message}", 7000)
+        if self._update_manual:
+            QMessageBox.warning(self, "No se pudo actualizar", message)
+
+    def _installer_ready(self, installer_path: str, latest_build: int) -> None:
+        self.statusBar().showMessage(
+            f"Instalando build {latest_build}. Pantallas se reiniciará…"
+        )
+        if not launch_installer_after_exit(installer_path):
+            self._update_failed("No se pudo iniciar el instalador descargado.")
+            return
+
+        self._really_quit = True
+        self.enforcer.set_active(False)
+        self.update_timer.stop()
+        self.tray.hide()
+        QApplication.instance().quit()
+
+    def _update_finished(self) -> None:
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Buscar actualizaciones")
+        worker = self._update_worker
+        self._update_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def show_from_tray(self) -> None:
         self.show()
