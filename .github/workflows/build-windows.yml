@@ -66,7 +66,7 @@ jobs:
       - name: Construir aplicación onedir
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onedir --windowed --name Pantallas --icon "assets\generated\pantallas.ico" --add-data "assets\brand;assets\brand" app.py
+          pyinstaller --noconfirm --clean --onedir --windowed --name Pantallas --icon "assets\generated\pantallas.ico" --add-data "assets\brand;assets\brand" --add-data "assets\generated\pantallas-256.png;assets\generated" --add-data "assets\generated\pantallas-tray-256.png;assets\generated" app.py
 
       - name: Verificar runtime e identidad
         shell: pwsh
