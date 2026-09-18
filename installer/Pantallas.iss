@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "0.4.0"
 #endif
 
 [Setup]
@@ -18,10 +18,12 @@ SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
+SetupLogging=yes
+UsePreviousAppDir=yes
 UninstallDisplayIcon={app}\Pantallas.exe
 
 [Files]
-Source: "..\dist\Pantallas.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\Pantallas\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Pantallas"; Filename: "{app}\Pantallas.exe"
