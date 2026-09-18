@@ -123,7 +123,6 @@ class DashboardPage(QWidget):
         quick_row = QHBoxLayout()
         for text, page in (
             ("Administrar monitores", "monitors"),
-            ("Acomodar distribución", "monitor-layout"),
             ("Fijar una aplicación", "windows"),
             ("Buscar actualizaciones", "updates"),
         ):
@@ -164,7 +163,6 @@ class DashboardPage(QWidget):
 
 class MonitorControlCard(Card):
     disable_requested = Signal(str)
-    configure_requested = Signal(str)
     brightness_changed = Signal(str, int)
     move_requested = Signal(str, int)
     renamed = Signal()
@@ -226,10 +224,6 @@ class MonitorControlCard(Card):
         )
         rename = QPushButton("Cambiar nombre")
         rename.clicked.connect(self._rename)
-        configure = QPushButton("Configurar")
-        configure.clicked.connect(
-            lambda: self.configure_requested.emit(self.monitor.device)
-        )
         disable = danger_button("Apagar")
         disable.setToolTip(
             "Si es el último monitor activo, Pantallas mostrará la protección configurada."
@@ -238,7 +232,6 @@ class MonitorControlCard(Card):
         actions.addWidget(move_up)
         actions.addWidget(move_down)
         actions.addWidget(rename)
-        actions.addWidget(configure)
         actions.addWidget(disable)
         actions.addStretch()
         self.body.addLayout(actions)
@@ -265,7 +258,6 @@ class MonitorControlCard(Card):
 class MonitorsPage(QWidget):
     disable_requested = Signal(str)
     enable_requested = Signal(str)
-    configure_requested = Signal(str)
     status = Signal(str)
 
     def __init__(self) -> None:
@@ -331,7 +323,6 @@ class MonitorsPage(QWidget):
             for monitor in monitors:
                 card = MonitorControlCard(monitor, len(monitors))
                 card.disable_requested.connect(self.disable_requested)
-                card.configure_requested.connect(self.configure_requested)
                 card.brightness_changed.connect(self._set_brightness)
                 card.move_requested.connect(self._move_monitor)
                 card.renamed.connect(self._renamed)
@@ -690,37 +681,18 @@ class MonitorsWorkspacePage(QWidget):
         super().__init__()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
         self.controls = MonitorsPage()
-        self.layout = LayoutPage()
-        self.tabs.addTab(self.controls, "Control")
-        self.tabs.addTab(self.layout, "Distribución")
-        root.addWidget(self.tabs)
+        root.addWidget(self.controls)
 
         self.controls.disable_requested.connect(self.disable_requested)
         self.controls.enable_requested.connect(self.enable_requested)
-        self.controls.configure_requested.connect(self.show_layout_for)
         self.controls.status.connect(self.status)
-        self.layout.status.connect(self.status)
 
     def refresh(self) -> None:
         self.controls.refresh()
-        self.layout.refresh()
 
     def show_controls(self) -> None:
-        self.tabs.setCurrentWidget(self.controls)
         self.controls.refresh()
-
-    def show_layout(self) -> None:
-        self.tabs.setCurrentWidget(self.layout)
-        self.layout.refresh()
-
-    def show_layout_for(self, device: str) -> None:
-        self.show_layout()
-        self.layout.select_monitor(device)
 
 
 class RulesPage(QWidget):
@@ -752,9 +724,9 @@ class RulesPage(QWidget):
             "Ventanas y reglas",
             "Elegí dónde debe vivir cada aplicación y Pantallas la mantendrá ahí.",
         )
-        self.auto = QCheckBox("Bloqueo automático")
-        self.auto.setChecked(True)
-        self.auto.toggled.connect(self.enforcer.set_active)
+        self.auto = QCheckBox("Bloqueo de posiciones")
+        self.auto.setChecked(bool(load_preferences().get("position_lock_enabled", True)))
+        self.auto.toggled.connect(self._auto_changed)
         refresh = QPushButton("Actualizar ventanas")
         refresh.clicked.connect(self.refresh_windows)
         h.addWidget(self.auto)
@@ -843,7 +815,28 @@ class RulesPage(QWidget):
         )
         self.refresh_windows()
         self.refresh_rules()
-        QTimer.singleShot(0, lambda: self.enforcer.set_active(True))
+        QTimer.singleShot(
+            0,
+            lambda: self.enforcer.set_active(
+                bool(load_preferences().get("position_lock_enabled", True))
+            ),
+        )
+
+    def _auto_changed(self, enabled: bool) -> None:
+        save_preferences(position_lock_enabled=enabled)
+        self.enforcer.set_active(enabled)
+        self.status.emit(
+            "Bloqueo de posiciones activado."
+            if enabled
+            else "Bloqueo de posiciones desactivado."
+        )
+
+    def set_position_lock_enabled(self, enabled: bool) -> None:
+        self.auto.blockSignals(True)
+        self.auto.setChecked(bool(enabled))
+        self.auto.blockSignals(False)
+        save_preferences(position_lock_enabled=bool(enabled))
+        self.enforcer.set_active(bool(enabled))
 
     @staticmethod
     def _pct_spin(low: float, high: float, value: float) -> QDoubleSpinBox:
