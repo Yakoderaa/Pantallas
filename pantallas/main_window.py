@@ -199,14 +199,6 @@ class MainWindow(QMainWindow):
         settings.preferences_changed.connect(self._settings_changed)
 
     def navigate(self, page: str) -> None:
-        if page == "monitor-layout":
-            widget = self.pages["monitors"]
-            self.stack.setCurrentWidget(widget)
-            self.nav_buttons["monitors"].setChecked(True)
-            workspace: MonitorsWorkspacePage = self.pages["monitors"]
-            workspace.show_layout()
-            return
-
         widget = self.pages.get(page)
         if widget is None:
             return
@@ -263,10 +255,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
     def open_monitor_config(self, device: str) -> None:
-        self.stack.setCurrentWidget(self.pages["monitors"])
-        self.nav_buttons["monitors"].setChecked(True)
-        workspace: MonitorsWorkspacePage = self.pages["monitors"]
-        workspace.show_layout_for(device)
+        self.navigate("monitors")
 
     def _effective_active_monitors(self):
         all_monitors = enum_monitors()
@@ -388,8 +377,8 @@ class MainWindow(QMainWindow):
                 label += " · principal"
             submenu = self.tray_menu.addMenu(label)
 
-            configure = submenu.addAction("Abrir y configurar")
-            configure.triggered.connect(
+            open_monitor = submenu.addAction("Abrir Pantallas aquí")
+            open_monitor.triggered.connect(
                 lambda _=False, dev=monitor.device: self._open_monitor_from_tray(dev)
             )
 
@@ -420,6 +409,15 @@ class MainWindow(QMainWindow):
 
         self.tray_menu.addSeparator()
 
+        lock_action = self.tray_menu.addAction("Bloqueo de posiciones")
+        lock_action.setCheckable(True)
+        lock_action.setChecked(
+            bool(load_preferences().get("position_lock_enabled", True))
+        )
+        lock_action.toggled.connect(self._tray_toggle_position_lock)
+
+        self.tray_menu.addSeparator()
+
         startup = self.tray_menu.addAction("Iniciar con Windows")
         startup.setCheckable(True)
         startup.setChecked(startup_is_registered())
@@ -440,6 +438,15 @@ class MainWindow(QMainWindow):
 
         quit_action = self.tray_menu.addAction("Salir")
         quit_action.triggered.connect(self.quit_app)
+
+    def _tray_toggle_position_lock(self, enabled: bool) -> None:
+        rules: RulesPage = self.pages["windows"]
+        rules.set_position_lock_enabled(enabled)
+        self._status(
+            "Bloqueo de posiciones activado."
+            if enabled
+            else "Bloqueo de posiciones desactivado."
+        )
 
     def _tray_toggle_startup(self, enabled: bool) -> None:
         prefs = load_preferences()
@@ -462,7 +469,7 @@ class MainWindow(QMainWindow):
     def _open_monitor_from_tray(self, device: str) -> None:
         self.show_from_tray()
         self._move_window_to_monitor(device)
-        self.open_monitor_config(device)
+        self.navigate("monitors")
 
     def check_for_updates(self, manual: bool = False) -> None:
         if self._update_worker is not None and self._update_worker.isRunning():
