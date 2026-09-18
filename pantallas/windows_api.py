@@ -19,8 +19,10 @@ _CDS_UPDATEREGISTRY = getattr(win32con, "CDS_UPDATEREGISTRY", 0x00000001)
 _CDS_NORESET = getattr(win32con, "CDS_NORESET", 0x10000000)
 _DM_POSITION = getattr(win32con, "DM_POSITION", 0x00000020)
 _DM_DISPLAYORIENTATION = getattr(win32con, "DM_DISPLAYORIENTATION", 0x00000080)
+_DM_BITSPERPEL = getattr(win32con, "DM_BITSPERPEL", 0x00040000)
 _DM_PELSWIDTH = getattr(win32con, "DM_PELSWIDTH", 0x00080000)
 _DM_PELSHEIGHT = getattr(win32con, "DM_PELSHEIGHT", 0x00100000)
+_DM_DISPLAYFREQUENCY = getattr(win32con, "DM_DISPLAYFREQUENCY", 0x00400000)
 
 _ORIENTATION_TO_WIN32 = {
     0: getattr(win32con, "DMDO_DEFAULT", 0),
@@ -176,6 +178,111 @@ def apply_monitor_layout(layout: Iterable[dict[str, int | str]]) -> tuple[bool, 
         return True, f"Distribución aplicada en {len(staged)} pantalla(s)."
     except Exception as exc:
         return False, f"No se pudo aplicar la distribución: {exc}"
+
+
+def capture_monitor_profile(device: str) -> dict:
+    monitor = next((m for m in enum_monitors() if m.device == device), None)
+    if monitor is None:
+        raise RuntimeError("La pantalla ya no está activa.")
+
+    devmode = win32api.EnumDisplaySettings(device, win32con.ENUM_CURRENT_SETTINGS)
+    return {
+        "device": monitor.device,
+        "name": monitor.name,
+        "x": int(monitor.left),
+        "y": int(monitor.top),
+        "width": int(devmode.PelsWidth),
+        "height": int(devmode.PelsHeight),
+        "orientation": int(monitor.orientation),
+        "bits_per_pel": int(getattr(devmode, "BitsPerPel", 32) or 32),
+        "frequency": int(getattr(devmode, "DisplayFrequency", 60) or 60),
+        "primary": bool(monitor.primary),
+    }
+
+
+def disable_monitor(device: str) -> tuple[bool, str, dict | None]:
+    active = enum_monitors()
+    monitor = next((m for m in active if m.device == device), None)
+    if monitor is None:
+        return False, "La pantalla seleccionada ya no está activa.", None
+    if len(active) <= 1:
+        return False, "No se puede apagar la última pantalla activa.", None
+
+    try:
+        profile = capture_monitor_profile(device)
+        devmode = win32api.EnumDisplaySettings(device, win32con.ENUM_CURRENT_SETTINGS)
+        devmode.Position_x = 0
+        devmode.Position_y = 0
+        devmode.PelsWidth = 0
+        devmode.PelsHeight = 0
+        devmode.Fields = _DM_POSITION | _DM_PELSWIDTH | _DM_PELSHEIGHT
+
+        result = win32api.ChangeDisplaySettingsEx(
+            device,
+            devmode,
+            _CDS_UPDATEREGISTRY | _CDS_NORESET,
+        )
+        if result != win32con.DISP_CHANGE_SUCCESSFUL:
+            return False, f"Windows rechazó desactivar {device} (código {result}).", None
+
+        result = win32api.ChangeDisplaySettingsEx(None, None, 0)
+        if result != win32con.DISP_CHANGE_SUCCESSFUL:
+            return False, f"No se pudo confirmar el apagado (código {result}).", None
+
+        return True, f"{profile['name']} fue desactivado desde Windows.", profile
+    except Exception as exc:
+        return False, f"No se pudo apagar la pantalla: {exc}", None
+
+
+def enable_monitor(profile: dict) -> tuple[bool, str]:
+    device = str(profile.get("device", ""))
+    if not device:
+        return False, "No hay información suficiente para restaurar la pantalla."
+
+    try:
+        try:
+            devmode = win32api.EnumDisplaySettings(
+                device,
+                getattr(win32con, "ENUM_REGISTRY_SETTINGS", -2),
+            )
+        except Exception:
+            devmode = win32api.EnumDisplaySettings(device, win32con.ENUM_CURRENT_SETTINGS)
+
+        devmode.Position_x = int(profile.get("x", 0))
+        devmode.Position_y = int(profile.get("y", 0))
+        devmode.PelsWidth = max(640, int(profile.get("width", 1920)))
+        devmode.PelsHeight = max(480, int(profile.get("height", 1080)))
+        devmode.DisplayOrientation = _ORIENTATION_TO_WIN32.get(
+            int(profile.get("orientation", 0)),
+            _ORIENTATION_TO_WIN32[0],
+        )
+        devmode.BitsPerPel = int(profile.get("bits_per_pel", 32))
+        devmode.DisplayFrequency = int(profile.get("frequency", 60))
+        devmode.Fields = (
+            _DM_POSITION
+            | _DM_PELSWIDTH
+            | _DM_PELSHEIGHT
+            | _DM_DISPLAYORIENTATION
+            | _DM_BITSPERPEL
+            | _DM_DISPLAYFREQUENCY
+        )
+
+        result = win32api.ChangeDisplaySettingsEx(
+            device,
+            devmode,
+            _CDS_UPDATEREGISTRY | _CDS_NORESET,
+        )
+        if result != win32con.DISP_CHANGE_SUCCESSFUL:
+            return False, f"Windows rechazó restaurar {device} (código {result})."
+
+        result = win32api.ChangeDisplaySettingsEx(None, None, 0)
+        if result != win32con.DISP_CHANGE_SUCCESSFUL:
+            return False, f"No se pudo confirmar el encendido (código {result})."
+
+        name = str(profile.get("name") or device)
+        return True, f"{name} fue habilitado nuevamente."
+    except Exception as exc:
+        return False, f"No se pudo encender la pantalla: {exc}"
 
 
 def _physical_monitors(hmonitor: int) -> tuple[object | None, int]:
