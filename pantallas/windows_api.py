@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import time
 from ctypes import wintypes
 from pathlib import Path
 from typing import Iterable
@@ -200,41 +201,7 @@ def capture_monitor_profile(device: str) -> dict:
     }
 
 
-def disable_monitor(device: str) -> tuple[bool, str, dict | None]:
-    active = enum_monitors()
-    monitor = next((m for m in active if m.device == device), None)
-    if monitor is None:
-        return False, "La pantalla seleccionada ya no está activa.", None
-    if len(active) <= 1:
-        return False, "No se puede apagar la última pantalla activa.", None
-
-    try:
-        profile = capture_monitor_profile(device)
-        devmode = win32api.EnumDisplaySettings(device, win32con.ENUM_CURRENT_SETTINGS)
-        devmode.Position_x = 0
-        devmode.Position_y = 0
-        devmode.PelsWidth = 0
-        devmode.PelsHeight = 0
-        devmode.Fields = _DM_POSITION | _DM_PELSWIDTH | _DM_PELSHEIGHT
-
-        result = win32api.ChangeDisplaySettingsEx(
-            device,
-            devmode,
-            _CDS_UPDATEREGISTRY | _CDS_NORESET,
-        )
-        if result != win32con.DISP_CHANGE_SUCCESSFUL:
-            return False, f"Windows rechazó desactivar {device} (código {result}).", None
-
-        result = win32api.ChangeDisplaySettingsEx(None, None, 0)
-        if result != win32con.DISP_CHANGE_SUCCESSFUL:
-            return False, f"No se pudo confirmar el apagado (código {result}).", None
-
-        return True, f"{profile['name']} fue desactivado desde Windows.", profile
-    except Exception as exc:
-        return False, f"No se pudo apagar la pantalla: {exc}", None
-
-
-def enable_monitor(profile: dict) -> tuple[bool, str]:
+def _restore_monitor_profile(profile: dict) -> tuple[bool, str]:
     device = str(profile.get("device", ""))
     if not device:
         return False, "No hay información suficiente para restaurar la pantalla."
@@ -270,16 +237,149 @@ def enable_monitor(profile: dict) -> tuple[bool, str]:
         result = win32api.ChangeDisplaySettingsEx(
             device,
             devmode,
-            _CDS_UPDATEREGISTRY | _CDS_NORESET,
+            _CDS_UPDATEREGISTRY,
         )
         if result != win32con.DISP_CHANGE_SUCCESSFUL:
             return False, f"Windows rechazó restaurar {device} (código {result})."
+        return True, ""
+    except Exception as exc:
+        return False, f"No se pudo restaurar la salida: {exc}"
 
-        result = win32api.ChangeDisplaySettingsEx(None, None, 0)
-        if result != win32con.DISP_CHANGE_SUCCESSFUL:
-            return False, f"No se pudo confirmar el encendido (código {result})."
 
-        name = str(profile.get("name") or device)
+def _wake_windows_displays() -> None:
+    try:
+        win32gui.PostMessage(
+            win32con.HWND_BROADCAST,
+            win32con.WM_SYSCOMMAND,
+            win32con.SC_MONITORPOWER,
+            -1,
+        )
+    except Exception:
+        pass
+
+
+def disable_monitor(device: str) -> tuple[bool, str, dict | None]:
+    active = enum_monitors()
+    monitor = next((m for m in active if m.device == device), None)
+    if monitor is None:
+        return False, "La pantalla seleccionada ya no está activa.", None
+    if len(active) <= 1:
+        return False, "No se puede apagar la última pantalla activa.", None
+
+    try:
+        profile = capture_monitor_profile(device)
+
+        # First try to remove the display path from the Windows desktop.
+        devmode = win32api.EnumDisplaySettings(device, win32con.ENUM_CURRENT_SETTINGS)
+        devmode.Position_x = 0
+        devmode.Position_y = 0
+        devmode.PelsWidth = 0
+        devmode.PelsHeight = 0
+        devmode.Fields = _DM_POSITION | _DM_PELSWIDTH | _DM_PELSHEIGHT
+
+        result = win32api.ChangeDisplaySettingsEx(
+            device,
+            devmode,
+            _CDS_UPDATEREGISTRY,
+        )
+        if result == win32con.DISP_CHANGE_SUCCESSFUL:
+            time.sleep(0.7)
+            still_active = any(m.device == device for m in enum_monitors())
+            if not still_active:
+                profile["mode"] = "windows_disabled"
+                return (
+                    True,
+                    f"{profile['name']} fue desactivado desde Windows.",
+                    profile,
+                )
+
+        # Some drivers report success but keep the panel active. Restore the
+        # normal signal before using the monitor's physical DDC/CI power state.
+        _restore_monitor_profile(profile)
+        time.sleep(0.25)
+        current = next((m for m in enum_monitors() if m.device == device), monitor)
+
+        if set_monitor_power(current.handle, False):
+            profile["mode"] = "ddc_off"
+            return (
+                True,
+                f"{profile['name']} fue apagado físicamente por DDC/CI.",
+                profile,
+            )
+
+        return (
+            False,
+            "Windows no desactivó la salida y el monitor no aceptó el comando "
+            "de energía DDC/CI. El brillo puede ser compatible aunque el control "
+            "de energía VCP 0xD6 no lo sea.",
+            None,
+        )
+    except Exception as exc:
+        return False, f"No se pudo apagar la pantalla: {exc}", None
+
+
+def enable_monitor(profile: dict) -> tuple[bool, str]:
+    device = str(profile.get("device", ""))
+    if not device:
+        return False, "No hay información suficiente para restaurar la pantalla."
+
+    mode = str(profile.get("mode", "windows_disabled"))
+    name = str(profile.get("name") or device)
+
+    try:
+        if mode == "ddc_off":
+            monitor = next((m for m in enum_monitors() if m.device == device), None)
+            if monitor is not None and set_monitor_power(monitor.handle, True):
+                time.sleep(0.6)
+                return True, f"{name} fue encendido nuevamente."
+
+            # A number of monitors stop answering DDC after soft-off. Ask
+            # Windows to wake display hardware, then reacquire a fresh handle.
+            _wake_windows_displays()
+            time.sleep(0.8)
+            monitor = next((m for m in enum_monitors() if m.device == device), None)
+            if monitor is not None:
+                if set_monitor_power(monitor.handle, True):
+                    return True, f"{name} fue encendido nuevamente."
+                if get_monitor_brightness(monitor.handle) is not None:
+                    return True, f"{name} volvió a responder y quedó encendido."
+
+            # Pulse the saved mode as a final signal renegotiation attempt.
+            _restore_monitor_profile(profile)
+            time.sleep(0.8)
+            monitor = next((m for m in enum_monitors() if m.device == device), None)
+            if monitor is not None:
+                if set_monitor_power(monitor.handle, True):
+                    return True, f"{name} fue encendido nuevamente."
+                if get_monitor_brightness(monitor.handle) is not None:
+                    return True, f"{name} volvió a responder y quedó encendido."
+
+            return (
+                False,
+                f"{name} no respondió al encendido. Algunos monitores cortan "
+                "DDC/CI completamente durante el reposo profundo.",
+            )
+
+        ok, message = _restore_monitor_profile(profile)
+        if not ok:
+            return False, message
+
+        time.sleep(0.8)
+        monitor = next((m for m in enum_monitors() if m.device == device), None)
+        if monitor is None:
+            _wake_windows_displays()
+            time.sleep(0.6)
+            ok, message = _restore_monitor_profile(profile)
+            if not ok:
+                return False, message
+            time.sleep(0.6)
+            monitor = next((m for m in enum_monitors() if m.device == device), None)
+
+        if monitor is None:
+            return False, f"Windows no volvió a activar {name}."
+
+        # If the panel also supports DDC power, explicitly request ON.
+        set_monitor_power(monitor.handle, True)
         return True, f"{name} fue habilitado nuevamente."
     except Exception as exc:
         return False, f"No se pudo encender la pantalla: {exc}"
