@@ -312,7 +312,7 @@ class MonitorsPage(QWidget):
         self._clear()
         all_monitors = enum_monitors()
         ensure_monitor_order(all_monitors)
-        disabled = reconcile_monitors({m.device for m in all_monitors})
+        disabled = reconcile_monitors(all_monitors)
         monitors = sort_monitors(
             [m for m in all_monitors if m.device not in disabled]
         )
@@ -577,7 +577,7 @@ class RulesPage(QWidget):
     def refresh_monitors(self) -> None:
         current = self.monitor_combo.currentData()
         all_monitors = enum_monitors()
-        disabled = reconcile_monitors({m.device for m in all_monitors})
+        disabled = reconcile_monitors(all_monitors)
         self.monitors = sort_monitors(
             [m for m in all_monitors if m.device not in disabled]
         )
