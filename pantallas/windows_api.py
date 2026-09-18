@@ -187,6 +187,7 @@ def capture_monitor_profile(device: str) -> dict:
         raise RuntimeError("La pantalla ya no está activa.")
 
     devmode = win32api.EnumDisplaySettings(device, win32con.ENUM_CURRENT_SETTINGS)
+    brightness = get_monitor_brightness(monitor.handle)
     return {
         "device": monitor.device,
         "name": monitor.name,
@@ -198,6 +199,7 @@ def capture_monitor_profile(device: str) -> dict:
         "bits_per_pel": int(getattr(devmode, "BitsPerPel", 32) or 32),
         "frequency": int(getattr(devmode, "DisplayFrequency", 60) or 60),
         "primary": bool(monitor.primary),
+        "brightness": brightness,
     }
 
 
@@ -247,6 +249,11 @@ def _restore_monitor_profile(profile: dict) -> tuple[bool, str]:
 
 
 def _wake_windows_displays() -> None:
+    # Reset Windows' display idle timer and explicitly request display power-on.
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(0x00000001 | 0x00000002)
+    except Exception:
+        pass
     try:
         win32gui.PostMessage(
             win32con.HWND_BROADCAST,
@@ -299,23 +306,58 @@ def disable_monitor(device: str, *, allow_last: bool = False) -> tuple[bool, str
         time.sleep(0.25)
         current = next((m for m in enum_monitors() if m.device == device), monitor)
 
-        if set_monitor_power(current.handle, False):
-            profile["mode"] = "ddc_off"
+        # Prefer DPMS standby (0x02) over deep-off (0x04). Standby keeps
+        # DDC/CI alive on substantially more monitors, so waking them is reliable.
+        if set_monitor_power_value(current.handle, 0x02):
+            profile["mode"] = "ddc_standby"
+            profile["power_value"] = 0x02
             return (
                 True,
-                f"{profile['name']} fue apagado físicamente por DDC/CI.",
+                f"{profile['name']} fue puesto en standby por DDC/CI.",
+                profile,
+            )
+
+        # Final compatibility fallback for monitors that reject standby.
+        if set_monitor_power_value(current.handle, 0x04):
+            profile["mode"] = "ddc_off"
+            profile["power_value"] = 0x04
+            return (
+                True,
+                f"{profile['name']} fue apagado por DDC/CI.",
                 profile,
             )
 
         return (
             False,
-            "Windows no desactivó la salida y el monitor no aceptó el comando "
-            "de energía DDC/CI. El brillo puede ser compatible aunque el control "
-            "de energía VCP 0xD6 no lo sea.",
+            "Windows no desactivó la salida y el monitor no aceptó los modos "
+            "de energía DDC/CI compatibles.",
             None,
         )
     except Exception as exc:
         return False, f"No se pudo apagar la pantalla: {exc}", None
+
+
+def _restore_saved_brightness(profile: dict, monitor: MonitorInfo) -> bool:
+    saved = profile.get("brightness")
+    if saved is None:
+        return get_monitor_brightness(monitor.handle) is not None
+    try:
+        value = max(0, min(100, int(saved)))
+    except Exception:
+        return False
+
+    # DDC can need a few seconds after link renegotiation.
+    for _ in range(6):
+        current = get_monitor_brightness(monitor.handle)
+        if current is not None:
+            if set_monitor_brightness(monitor.handle, value):
+                return True
+            return True
+        time.sleep(0.45)
+        fresh = next((m for m in enum_monitors() if m.device == monitor.device), None)
+        if fresh is not None:
+            monitor = fresh
+    return False
 
 
 def enable_monitor(profile: dict) -> tuple[bool, str]:
@@ -327,62 +369,69 @@ def enable_monitor(profile: dict) -> tuple[bool, str]:
     name = str(profile.get("name") or device)
 
     try:
-        if mode == "ddc_off":
-            monitor = next((m for m in enum_monitors() if m.device == device), None)
-            if monitor is not None and set_monitor_power(monitor.handle, True):
-                time.sleep(0.6)
+        # Always pulse the saved Windows mode first. This forces a fresh video
+        # signal negotiation even if Windows still thinks the display is present.
+        _restore_monitor_profile(profile)
+        _wake_windows_displays()
+
+        if mode in {"ddc_standby", "ddc_off"}:
+            # Reacquire a fresh HMONITOR/physical handle on every attempt. Handles
+            # obtained before sleep are often stale after the panel wakes.
+            power_ok = False
+            responsive = False
+            for attempt in range(8):
+                _wake_windows_displays()
+                monitor = next((m for m in enum_monitors() if m.device == device), None)
+                if monitor is not None:
+                    if set_monitor_power_value(monitor.handle, 0x01):
+                        power_ok = True
+                    # A successful brightness read proves DDC is alive again.
+                    value = get_monitor_brightness(monitor.handle)
+                    if value is not None:
+                        responsive = True
+                        _restore_saved_brightness(profile, monitor)
+                        break
+                # Deep-off monitors often need longer than standby monitors.
+                time.sleep(0.55 if attempt < 3 else 0.9)
+
+            if power_ok or responsive:
                 return True, f"{name} fue encendido nuevamente."
 
-            # A number of monitors stop answering DDC after soft-off. Ask
-            # Windows to wake display hardware, then reacquire a fresh handle.
-            _wake_windows_displays()
-            time.sleep(0.8)
-            monitor = next((m for m in enum_monitors() if m.device == device), None)
-            if monitor is not None:
-                if set_monitor_power(monitor.handle, True):
-                    return True, f"{name} fue encendido nuevamente."
-                if get_monitor_brightness(monitor.handle) is not None:
-                    return True, f"{name} volvió a responder y quedó encendido."
-
-            # Pulse the saved mode as a final signal renegotiation attempt.
-            _restore_monitor_profile(profile)
-            time.sleep(0.8)
-            monitor = next((m for m in enum_monitors() if m.device == device), None)
-            if monitor is not None:
-                if set_monitor_power(monitor.handle, True):
-                    return True, f"{name} fue encendido nuevamente."
-                if get_monitor_brightness(monitor.handle) is not None:
-                    return True, f"{name} volvió a responder y quedó encendido."
+            # One final mode pulse can retrain DP/HDMI after a deep DDC off.
+            ok, _message = _restore_monitor_profile(profile)
+            if ok:
+                _wake_windows_displays()
+                time.sleep(1.0)
+                monitor = next((m for m in enum_monitors() if m.device == device), None)
+                if monitor is not None:
+                    if set_monitor_power_value(monitor.handle, 0x01):
+                        _restore_saved_brightness(profile, monitor)
+                        return True, f"{name} fue encendido nuevamente."
 
             return (
                 False,
-                f"{name} no respondió al encendido. Algunos monitores cortan "
-                "DDC/CI completamente durante el reposo profundo.",
+                f"{name} no respondió al despertar. Pantallas reintentó señal de "
+                "Windows y DDC/CI, pero el monitor continúa en reposo profundo.",
             )
 
         ok, message = _restore_monitor_profile(profile)
         if not ok:
             return False, message
 
-        time.sleep(0.8)
-        monitor = next((m for m in enum_monitors() if m.device == device), None)
-        if monitor is None:
+        monitor = None
+        for _ in range(7):
             _wake_windows_displays()
-            time.sleep(0.6)
-            ok, message = _restore_monitor_profile(profile)
-            if not ok:
-                return False, message
-            time.sleep(0.6)
             monitor = next((m for m in enum_monitors() if m.device == device), None)
+            if monitor is not None:
+                set_monitor_power_value(monitor.handle, 0x01)
+                _restore_saved_brightness(profile, monitor)
+                return True, f"{name} fue habilitado nuevamente."
+            time.sleep(0.6)
 
-        if monitor is None:
-            return False, f"Windows no volvió a activar {name}."
-
-        # If the panel also supports DDC power, explicitly request ON.
-        set_monitor_power(monitor.handle, True)
-        return True, f"{name} fue habilitado nuevamente."
+        return False, f"Windows no volvió a activar {name}."
     except Exception as exc:
         return False, f"No se pudo encender la pantalla: {exc}"
+
 
 
 def _physical_monitors(hmonitor: int) -> tuple[object | None, int]:
@@ -449,20 +498,28 @@ def set_monitor_brightness(hmonitor: int, percent: int) -> bool:
         _dxva2.DestroyPhysicalMonitors(count, array)
 
 
-def set_monitor_power(hmonitor: int, on: bool) -> bool:
-    """DDC/CI VCP code 0xD6: 0x01 on, 0x04 soft-off."""
+def set_monitor_power_value(hmonitor: int, value: int) -> bool:
+    """Write MCCS VCP D6 power mode to one logical monitor."""
     array, count = _physical_monitors(hmonitor)
     if not array or count <= 0:
         return False
     any_success = False
-    value = 0x01 if on else 0x04
     try:
         for physical in array:
-            if _dxva2.SetVCPFeature(physical.hPhysicalMonitor, 0xD6, value):
+            if _dxva2.SetVCPFeature(
+                physical.hPhysicalMonitor,
+                0xD6,
+                int(value) & 0xFF,
+            ):
                 any_success = True
         return any_success
     finally:
         _dxva2.DestroyPhysicalMonitors(count, array)
+
+
+def set_monitor_power(hmonitor: int, on: bool) -> bool:
+    # Use standby for off: unlike deep DPMS-off, it normally preserves DDC.
+    return set_monitor_power_value(hmonitor, 0x01 if on else 0x02)
 
 
 def enum_windows() -> list[WindowInfo]:
