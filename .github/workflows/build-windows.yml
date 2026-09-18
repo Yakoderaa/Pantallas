@@ -54,7 +54,7 @@ jobs:
         shell: pwsh
         run: |
           python -m compileall -q app.py pantallas
-          python -c "import pantallas.windows_api; import pantallas.rules; import pantallas.update_service; import pantallas.main_window; print('imports OK')"
+          python -c "import pantallas.windows_api; import pantallas.monitor_state; import pantallas.preferences; import pantallas.rules; import pantallas.update_service; import pantallas.main_window; print('imports OK')"
 
       - name: Construir Pantallas.exe
         shell: pwsh
@@ -64,7 +64,7 @@ jobs:
       - name: Construir instalador
         shell: pwsh
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.2.0.${{ github.run_number }}" installer\Pantallas.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.3.0.${{ github.run_number }}" installer\Pantallas.iss
 
       - name: Generar SHA-256
         shell: pwsh
