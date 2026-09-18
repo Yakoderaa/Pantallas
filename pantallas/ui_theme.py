@@ -40,6 +40,28 @@ QFrame#Card, QFrame#StatCard {
 QFrame#Card:hover {
     border-color: #38465c;
 }
+QTabWidget::pane {
+    border: 0;
+    background: transparent;
+}
+QTabBar::tab {
+    background: #11151d;
+    color: #8d97a8;
+    border: 1px solid #252c38;
+    padding: 9px 18px;
+    margin: 8px 4px 0 0;
+    border-radius: 9px;
+    font-weight: 700;
+}
+QTabBar::tab:selected {
+    background: #1d2940;
+    color: #9bb7ff;
+    border-color: #3a4d72;
+}
+QTabBar::tab:hover:!selected {
+    background: #181d27;
+    color: #f4f7fb;
+}
 QLabel#StatValue {
     font-size: 22pt;
     font-weight: 800;
