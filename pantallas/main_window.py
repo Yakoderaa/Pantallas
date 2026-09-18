@@ -309,6 +309,16 @@ class MainWindow(QMainWindow):
 
         profile["name"] = monitor_display_name(target)
         method_used = str(profile.get("power_method", ""))
+        failed_methods = {
+            str(item)
+            for item in profile.get("failed_methods", [])
+            if str(item)
+        }
+        if "ddc" in failed_methods:
+            record_ddc_off(device, False)
+        if "windows" in failed_methods:
+            record_windows_off(device, False)
+
         if method_used == "ddc":
             record_ddc_off(device, True)
         elif method_used == "windows":
