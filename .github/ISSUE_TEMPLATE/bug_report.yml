@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible problem in Pantallas
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: input
+    id: build
+    attributes:
+      label: Pantallas build
+      placeholder: "Example: 56"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: monitor
+    attributes:
+      label: Monitor / connection details
+      description: HDMI, DisplayPort, dock, adapter, DDC/CI availability, etc.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Remove private data before attaching.
