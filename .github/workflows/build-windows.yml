@@ -54,7 +54,7 @@ jobs:
         shell: pwsh
         run: |
           python -m compileall -q app.py pantallas
-          python -c "import pantallas.windows_api; import pantallas.monitor_state; import pantallas.preferences; import pantallas.rules; import pantallas.update_service; import pantallas.ui_theme; import pantallas.ui_pages; import pantallas.main_window; print('imports OK')"
+          python -c "import pantallas.windows_api; import pantallas.monitor_state; import pantallas.monitor_order; import pantallas.brightness_cache; import pantallas.preferences; import pantallas.rules; import pantallas.update_service; import pantallas.ui_theme; import pantallas.ui_pages; import pantallas.main_window; print('imports OK')"
 
       - name: Construir aplicación onedir
         shell: pwsh
@@ -76,7 +76,7 @@ jobs:
       - name: Construir instalador
         shell: pwsh
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.5.0.${{ github.run_number }}" installer\Pantallas.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.6.0.${{ github.run_number }}" installer\Pantallas.iss
 
       - name: Generar SHA-256
         shell: pwsh
@@ -101,4 +101,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "build-${{ github.run_number }}"
-          gh release create $tag "installer_output/PantallasSetup.exe" "installer_output/PantallasSetup.exe.sha256" --repo "${{ github.repository }}" --title "Pantallas build ${{ github.run_number }}" --notes "Pantallas V0.5. Monitores integrados, nombres personalizados y apagado real robusto. Commit ${{ github.sha }}."
+          gh release create $tag "installer_output/PantallasSetup.exe" "installer_output/PantallasSetup.exe.sha256" --repo "${{ github.repository }}" --title "Pantallas build ${{ github.run_number }}" --notes "Pantallas V0.6. Seguridad configurable, mapa visible, orden manual y recuperación mejorada de energía/brillo. Commit ${{ github.sha }}."
