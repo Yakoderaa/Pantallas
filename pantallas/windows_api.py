@@ -18,6 +18,7 @@ from .models import MonitorInfo, WindowInfo
 # ChangeDisplaySettingsEx flags / DEVMODE fields.
 _CDS_UPDATEREGISTRY = getattr(win32con, "CDS_UPDATEREGISTRY", 0x00000001)
 _CDS_NORESET = getattr(win32con, "CDS_NORESET", 0x10000000)
+_CDS_RESET = getattr(win32con, "CDS_RESET", 0x40000000)
 _DM_POSITION = getattr(win32con, "DM_POSITION", 0x00000020)
 _DM_DISPLAYORIENTATION = getattr(win32con, "DM_DISPLAYORIENTATION", 0x00000080)
 _DM_BITSPERPEL = getattr(win32con, "DM_BITSPERPEL", 0x00040000)
@@ -265,6 +266,26 @@ def _wake_windows_displays() -> None:
         pass
 
 
+def _force_display_driver_reset(profile: dict) -> None:
+    device = str(profile.get("device", ""))
+    if not device:
+        return
+    try:
+        devmode = win32api.EnumDisplaySettings(
+            device,
+            win32con.ENUM_CURRENT_SETTINGS,
+        )
+        win32api.ChangeDisplaySettingsEx(
+            device,
+            devmode,
+            _CDS_RESET,
+        )
+        win32api.ChangeDisplaySettingsEx(None, None, 0)
+    except Exception:
+        pass
+    _wake_windows_displays()
+
+
 def _pulse_monitor_signal(profile: dict) -> None:
     """Briefly remove and restore a display mode to force HDMI/DP retraining."""
     device = str(profile.get("device", ""))
@@ -303,7 +324,18 @@ def disable_monitor(device: str, *, allow_last: bool = False) -> tuple[bool, str
     try:
         profile = capture_monitor_profile(device)
 
-        # First try to remove the display path from the Windows desktop.
+        # Prefer reversible DDC standby first. It doesn't rewrite Windows'
+        # desktop topology and is the safest path for monitors that support it.
+        if set_monitor_power_value(monitor.handle, 0x02):
+            profile["mode"] = "ddc_standby"
+            profile["power_value"] = 0x02
+            return (
+                True,
+                f"{profile['name']} fue puesto en standby por DDC/CI.",
+                profile,
+            )
+
+        # If DDC power control is unavailable, ask Windows to disable the path.
         devmode = win32api.EnumDisplaySettings(device, win32con.ENUM_CURRENT_SETTINGS)
         devmode.Position_x = 0
         devmode.Position_y = 0
@@ -317,7 +349,7 @@ def disable_monitor(device: str, *, allow_last: bool = False) -> tuple[bool, str
             _CDS_UPDATEREGISTRY,
         )
         if result == win32con.DISP_CHANGE_SUCCESSFUL:
-            time.sleep(0.7)
+            time.sleep(0.8)
             still_active = any(m.device == device for m in enum_monitors())
             if not still_active:
                 profile["mode"] = "windows_disabled"
@@ -327,24 +359,17 @@ def disable_monitor(device: str, *, allow_last: bool = False) -> tuple[bool, str
                     profile,
                 )
 
-        # Some drivers report success but keep the panel active. Restore the
-        # normal signal before using the monitor's physical DDC/CI power state.
-        _restore_monitor_profile(profile)
-        time.sleep(0.25)
+        # Compatibility fallback for displays that support only suspend/deep-off.
         current = next((m for m in enum_monitors() if m.device == device), monitor)
-
-        # Prefer DPMS standby (0x02) over deep-off (0x04). Standby keeps
-        # DDC/CI alive on substantially more monitors, so waking them is reliable.
-        if set_monitor_power_value(current.handle, 0x02):
-            profile["mode"] = "ddc_standby"
-            profile["power_value"] = 0x02
+        if set_monitor_power_value(current.handle, 0x03):
+            profile["mode"] = "ddc_suspend"
+            profile["power_value"] = 0x03
             return (
                 True,
-                f"{profile['name']} fue puesto en standby por DDC/CI.",
+                f"{profile['name']} fue suspendido por DDC/CI.",
                 profile,
             )
 
-        # Final compatibility fallback for monitors that reject standby.
         if set_monitor_power_value(current.handle, 0x04):
             profile["mode"] = "ddc_off"
             profile["power_value"] = 0x04
@@ -354,10 +379,13 @@ def disable_monitor(device: str, *, allow_last: bool = False) -> tuple[bool, str
                 profile,
             )
 
+        # Return the saved mode if Windows reported success without actually
+        # removing the path, so the desktop is never left in a half-applied state.
+        _restore_monitor_profile(profile)
         return (
             False,
-            "Windows no desactivó la salida y el monitor no aceptó los modos "
-            "de energía DDC/CI compatibles.",
+            "El monitor no aceptó standby/suspensión por DDC/CI y Windows no "
+            "consiguió desactivar su salida.",
             None,
         )
     except Exception as exc:
@@ -401,7 +429,7 @@ def enable_monitor(profile: dict) -> tuple[bool, str]:
         _restore_monitor_profile(profile)
         _wake_windows_displays()
 
-        if mode in {"ddc_standby", "ddc_off"}:
+        if mode in {"ddc_standby", "ddc_suspend", "ddc_off"}:
             # Reacquire a fresh HMONITOR/physical handle on every attempt. Handles
             # obtained before sleep are often stale after the panel wakes.
             power_ok = False
@@ -424,7 +452,19 @@ def enable_monitor(profile: dict) -> tuple[bool, str]:
             if power_ok or responsive:
                 return True, f"{name} fue encendido nuevamente."
 
-            # Deep-off from older builds may require a real link retrain.
+            # Some panels stop listening to DDC after standby/deep-off.
+            # Force a display-driver reset before the heavier link retrain.
+            _force_display_driver_reset(profile)
+            for _ in range(3):
+                time.sleep(0.7)
+                monitor = next((m for m in enum_monitors() if m.device == device), None)
+                if monitor is not None:
+                    if set_monitor_power_value(monitor.handle, 0x01):
+                        _restore_saved_brightness(profile, monitor)
+                        return True, f"{name} fue encendido nuevamente."
+                _wake_windows_displays()
+
+            # Deep-off from older builds may require a full link retrain.
             _pulse_monitor_signal(profile)
             for _ in range(5):
                 time.sleep(0.75)
