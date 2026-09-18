@@ -76,7 +76,7 @@ jobs:
       - name: Construir instalador
         shell: pwsh
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.6.0.${{ github.run_number }}" installer\Pantallas.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion="0.7.0.${{ github.run_number }}" installer\Pantallas.iss
 
       - name: Generar SHA-256
         shell: pwsh
@@ -101,4 +101,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "build-${{ github.run_number }}"
-          gh release create $tag "installer_output/PantallasSetup.exe" "installer_output/PantallasSetup.exe.sha256" --repo "${{ github.repository }}" --title "Pantallas build ${{ github.run_number }}" --notes "Pantallas V0.6. Seguridad configurable, mapa visible, orden manual y recuperación mejorada de energía/brillo. Commit ${{ github.sha }}."
+          gh release create $tag "installer_output/PantallasSetup.exe" "installer_output/PantallasSetup.exe.sha256" --repo "${{ github.repository }}" --title "Pantallas build ${{ github.run_number }}" --notes "Pantallas V0.7. Estado de apagado corregido, distribución editable eliminada y bloqueo global desde bandeja. Commit ${{ github.sha }}."
