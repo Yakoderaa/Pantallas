@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +37,11 @@ from PySide6.QtWidgets import (
 from . import __version__
 from .build_info import BUILD_ID
 from .models import MonitorInfo, WindowInfo
+from .monitor_aliases import (
+    display_name_for_device,
+    monitor_display_name,
+    set_monitor_alias,
+)
 from .monitor_state import load_disabled_monitors, reconcile_active_devices
 from .preferences import (
     load_preferences,
@@ -114,7 +121,7 @@ class DashboardPage(QWidget):
         quick_row = QHBoxLayout()
         for text, page in (
             ("Administrar monitores", "monitors"),
-            ("Acomodar distribución", "layout"),
+            ("Acomodar distribución", "monitor-layout"),
             ("Fijar una aplicación", "windows"),
             ("Buscar actualizaciones", "updates"),
         ):
@@ -144,7 +151,7 @@ class DashboardPage(QWidget):
         self.startup_stat.value_label.setText("Sí" if startup else "No")
 
         primary = next((m for m in monitors if m.primary), None)
-        primary_text = primary.name if primary else "sin identificar"
+        primary_text = monitor_display_name(primary) if primary else "sin identificar"
         self.summary.setText(
             f"Monitor principal: {primary_text}. "
             f"Hay {len(monitors)} pantalla(s) activa(s), {len(disabled)} apagada(s) "
@@ -156,9 +163,10 @@ class MonitorControlCard(Card):
     disable_requested = Signal(str)
     configure_requested = Signal(str)
     brightness_changed = Signal(str, int)
+    renamed = Signal()
 
     def __init__(self, monitor: MonitorInfo, active_count: int) -> None:
-        title = monitor.name + ("  ·  Principal" if monitor.primary else "")
+        title = monitor_display_name(monitor) + ("  ·  Principal" if monitor.primary else "")
         super().__init__(title)
         self.monitor = monitor
 
@@ -192,6 +200,8 @@ class MonitorControlCard(Card):
             self.slider.sliderReleased.connect(self._brightness_released)
 
         actions = QHBoxLayout()
+        rename = QPushButton("Cambiar nombre")
+        rename.clicked.connect(self._rename)
         configure = QPushButton("Configurar")
         configure.clicked.connect(
             lambda: self.configure_requested.emit(self.monitor.device)
@@ -202,6 +212,7 @@ class MonitorControlCard(Card):
             "" if active_count > 1 else "No se puede apagar la última pantalla activa."
         )
         disable.clicked.connect(lambda: self.disable_requested.emit(self.monitor.device))
+        actions.addWidget(rename)
         actions.addWidget(configure)
         actions.addWidget(disable)
         actions.addStretch()
@@ -211,6 +222,19 @@ class MonitorControlCard(Card):
         value = self.slider.value()
         self.value.setText(f"{value}%")
         self.brightness_changed.emit(self.monitor.device, value)
+
+    def _rename(self) -> None:
+        current = monitor_display_name(self.monitor)
+        alias, accepted = QInputDialog.getText(
+            self,
+            "Nombre del monitor",
+            "Nombre personalizado:",
+            text=current,
+        )
+        if not accepted:
+            return
+        set_monitor_alias(self.monitor.device, alias)
+        self.renamed.emit()
 
 
 class MonitorsPage(QWidget):
@@ -250,8 +274,9 @@ class MonitorsPage(QWidget):
 
     def refresh(self) -> None:
         self._clear()
-        monitors = enum_monitors()
-        disabled = reconcile_active_devices({m.device for m in monitors})
+        all_monitors = enum_monitors()
+        disabled = reconcile_active_devices({m.device for m in all_monitors})
+        monitors = [m for m in all_monitors if m.device not in disabled]
 
         if not monitors:
             empty = Card("No se detectaron monitores activos")
@@ -265,6 +290,7 @@ class MonitorsPage(QWidget):
                 card.disable_requested.connect(self.disable_requested)
                 card.configure_requested.connect(self.configure_requested)
                 card.brightness_changed.connect(self._set_brightness)
+                card.renamed.connect(self._renamed)
                 self.body.addWidget(card)
 
         if disabled:
@@ -273,7 +299,7 @@ class MonitorsPage(QWidget):
             self.body.addWidget(off_title)
             for device, profile in disabled.items():
                 card = Card(
-                    str(profile.get("name") or device),
+                    display_name_for_device(device, str(profile.get("name") or device)),
                     f"{profile.get('width', '—')} × {profile.get('height', '—')} · "
                     f"guardado para restauración",
                 )
@@ -291,6 +317,10 @@ class MonitorsPage(QWidget):
         self.status.emit(
             f"{len(monitors)} monitor(es) activo(s), {len(disabled)} apagado(s)."
         )
+
+    def _renamed(self) -> None:
+        self.status.emit("Nombre del monitor actualizado.")
+        self.refresh()
 
     def _set_brightness(self, device: str, value: int) -> None:
         monitor = next((m for m in enum_monitors() if m.device == device), None)
@@ -336,7 +366,7 @@ class MonitorItem(QGraphicsRectItem):
         self.setRect(0, 0, sw, sh)
         main = " · PRINCIPAL" if self.monitor.primary else ""
         self.label.setText(
-            f"{self.monitor.name}{main}\n{width} × {height}\n"
+            f"{monitor_display_name(self.monitor)}{main}\n{width} × {height}\n"
             f"{orientation_label(orientation)}"
         )
         self.label.setPos(12, 10)
@@ -551,7 +581,7 @@ class LayoutPage(QWidget):
             return
         self.selected_device = device
         self.canvas.select_device(device)
-        self.name.setText(monitor.name)
+        self.name.setText(monitor_display_name(monitor))
         self.meta.setText(
             f"{monitor.width} × {monitor.height} · {monitor.device}"
             + (" · Principal" if monitor.primary else "")
@@ -593,6 +623,48 @@ class LayoutPage(QWidget):
             QMessageBox.warning(self, "No se pudo aplicar", message)
         else:
             QTimer.singleShot(1000, self.refresh)
+
+
+class MonitorsWorkspacePage(QWidget):
+    disable_requested = Signal(str)
+    enable_requested = Signal(str)
+    status = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.controls = MonitorsPage()
+        self.layout = LayoutPage()
+        self.tabs.addTab(self.controls, "Control")
+        self.tabs.addTab(self.layout, "Distribución")
+        root.addWidget(self.tabs)
+
+        self.controls.disable_requested.connect(self.disable_requested)
+        self.controls.enable_requested.connect(self.enable_requested)
+        self.controls.configure_requested.connect(self.show_layout_for)
+        self.controls.status.connect(self.status)
+        self.layout.status.connect(self.status)
+
+    def refresh(self) -> None:
+        self.controls.refresh()
+        self.layout.refresh()
+
+    def show_controls(self) -> None:
+        self.tabs.setCurrentWidget(self.controls)
+        self.controls.refresh()
+
+    def show_layout(self) -> None:
+        self.tabs.setCurrentWidget(self.layout)
+        self.layout.refresh()
+
+    def show_layout_for(self, device: str) -> None:
+        self.show_layout()
+        self.layout.select_monitor(device)
 
 
 class RulesPage(QWidget):
@@ -733,7 +805,7 @@ class RulesPage(QWidget):
         self.monitor_combo.clear()
         for monitor in self.monitors:
             self.monitor_combo.addItem(
-                f"{monitor.name} · {monitor.width}×{monitor.height}",
+                f"{monitor_display_name(monitor)} · {monitor.width}×{monitor.height}",
                 monitor.device,
             )
         if current:
@@ -843,7 +915,15 @@ class RulesPage(QWidget):
             self.rules_table.setItem(
                 row, 2, QTableWidgetItem(rule.title_contains or "Cualquier título")
             )
-            self.rules_table.setItem(row, 3, QTableWidgetItem(rule.monitor_name))
+            display_names = {
+                monitor.device: monitor_display_name(monitor)
+                for monitor in enum_monitors()
+            }
+            self.rules_table.setItem(
+                row,
+                3,
+                QTableWidgetItem(display_names.get(rule.monitor_device, rule.monitor_name)),
+            )
             self.rules_table.setItem(
                 row,
                 4,
