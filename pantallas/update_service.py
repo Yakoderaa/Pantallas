@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
@@ -17,7 +18,24 @@ from .build_info import BUILD_ID
 RELEASE_API = "https://api.github.com/repos/Yakoderaa/Pantallas/releases/latest"
 INSTALLER_ASSET = "PantallasSetup.exe"
 CHECKSUM_ASSET = "PantallasSetup.exe.sha256"
-USER_AGENT = "Pantallas-Updater/1.0"
+USER_AGENT = "Pantallas-Updater/2.0"
+MAX_INSTALLER_BYTES = 250 * 1024 * 1024
+MAX_CHECKSUM_BYTES = 4096
+ALLOWED_INITIAL_HOSTS = {"github.com", "api.github.com"}
+ALLOWED_DOWNLOAD_HOSTS = {
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+}
+
+
+def _validate_https_url(url: str, *, download: bool = False) -> None:
+    parsed = urlparse(url)
+    allowed = ALLOWED_DOWNLOAD_HOSTS if download else ALLOWED_INITIAL_HOSTS
+    if parsed.scheme.lower() != "https":
+        raise RuntimeError("La actualización intentó usar una URL no segura.")
+    if (parsed.hostname or "").lower() not in allowed:
+        raise RuntimeError("La actualización intentó descargar desde un host no permitido.")
 
 
 def _request(url: str) -> urllib.request.Request:
@@ -30,9 +48,19 @@ def _request(url: str) -> urllib.request.Request:
     )
 
 
-def _read_url(url: str, timeout: int = 20) -> bytes:
+def _read_url(
+    url: str,
+    timeout: int = 20,
+    *,
+    max_bytes: int = 2 * 1024 * 1024,
+) -> bytes:
+    _validate_https_url(url, download=url != RELEASE_API)
     with urllib.request.urlopen(_request(url), timeout=timeout) as response:
-        return response.read()
+        _validate_https_url(response.geturl(), download=url != RELEASE_API)
+        data = response.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise RuntimeError("La respuesta de actualización excede el tamaño permitido.")
+        return data
 
 
 def _release_build_id(tag_name: str) -> int:
@@ -70,7 +98,10 @@ class UpdateWorker(QThread):
                 raise RuntimeError("La publicación no contiene el instalador o su checksum.")
 
             self.status.emit(f"Descargando actualización build {latest_build}…")
-            expected_text = _read_url(checksum_url).decode("ascii", errors="replace").strip()
+            expected_text = _read_url(
+                checksum_url,
+                max_bytes=MAX_CHECKSUM_BYTES,
+            ).decode("ascii", errors="replace").strip()
             expected_hash = expected_text.split()[0].lower()
             if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
                 raise RuntimeError("El checksum publicado no es válido.")
@@ -80,19 +111,35 @@ class UpdateWorker(QThread):
             installer_path = update_dir / f"PantallasSetup-build-{latest_build}.exe"
             partial_path = installer_path.with_suffix(".download")
 
+            _validate_https_url(installer_url, download=True)
             request = _request(installer_url)
             with urllib.request.urlopen(request, timeout=30) as response:
+                _validate_https_url(response.geturl(), download=True)
                 total = int(response.headers.get("Content-Length") or 0)
+                if total > MAX_INSTALLER_BYTES:
+                    raise RuntimeError("El instalador publicado excede el tamaño permitido.")
+
                 downloaded = 0
                 hasher = hashlib.sha256()
+                first_chunk = True
                 with partial_path.open("wb") as output:
                     while True:
                         chunk = response.read(1024 * 1024)
                         if not chunk:
                             break
+                        if first_chunk:
+                            first_chunk = False
+                            if not chunk.startswith(b"MZ"):
+                                raise RuntimeError(
+                                    "El archivo descargado no tiene formato ejecutable de Windows."
+                                )
+                        downloaded += len(chunk)
+                        if downloaded > MAX_INSTALLER_BYTES:
+                            raise RuntimeError(
+                                "La descarga excedió el límite de seguridad."
+                            )
                         output.write(chunk)
                         hasher.update(chunk)
-                        downloaded += len(chunk)
                         if total > 0:
                             self.progress.emit(min(100, round(downloaded * 100 / total)))
 
