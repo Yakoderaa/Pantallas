@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1
+
+- Clears stale DDC off-state automatically when a monitor is physically awake again.
+- Adds **Ya está encendido** as a manual state-recovery action for monitors that firmware probing cannot classify reliably.
+- Window rules and tray actions now use the same reconciled real monitor state.
+
 ## 0.8.0
 
 - Adaptive per-monitor power strategy with Automatic, Windows and DDC/CI modes.
