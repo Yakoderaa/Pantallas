@@ -140,8 +140,9 @@ class DashboardPage(QWidget):
         root.addStretch()
 
     def refresh_view(self, store: RuleStore) -> None:
-        monitors = enum_monitors()
-        disabled = reconcile_active_devices({m.device for m in monitors})
+        all_monitors = enum_monitors()
+        disabled = reconcile_active_devices({m.device for m in all_monitors})
+        monitors = [m for m in all_monitors if m.device not in disabled]
         active_rules = sum(1 for rule in store.rules if rule.enabled)
         startup = startup_is_registered()
 
@@ -801,7 +802,9 @@ class RulesPage(QWidget):
 
     def refresh_monitors(self) -> None:
         current = self.monitor_combo.currentData()
-        self.monitors = enum_monitors()
+        all_monitors = enum_monitors()
+        disabled = reconcile_active_devices({m.device for m in all_monitors})
+        self.monitors = [m for m in all_monitors if m.device not in disabled]
         self.monitor_combo.clear()
         for monitor in self.monitors:
             self.monitor_combo.addItem(
