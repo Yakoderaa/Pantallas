@@ -43,6 +43,7 @@ from .power_profiles import (
     record_ddc_wake,
     record_windows_off,
 )
+from .resources import app_icon, tray_icon
 from .rules import RuleEnforcer, RuleStore
 from .ui_pages import (
     DashboardPage,
@@ -167,11 +168,8 @@ class MainWindow(QMainWindow):
 
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(self)
-        icon: QIcon = self.style().standardIcon(
-            QStyle.StandardPixmap.SP_ComputerIcon
-        )
-        self.setWindowIcon(icon)
-        self.tray.setIcon(icon)
+        self.setWindowIcon(app_icon())
+        self.tray.setIcon(tray_icon())
         self.tray.setToolTip("Pantallas")
 
         self.tray_menu = QMenu()
