@@ -14,11 +14,25 @@ def resource_path(relative: str) -> Path:
     return base / relative
 
 
+def _first_icon(*paths: str) -> QIcon:
+    for relative in paths:
+        path = resource_path(relative)
+        if path.exists():
+            return QIcon(str(path))
+    return QIcon()
+
+
 def app_icon() -> QIcon:
-    path = resource_path("assets/brand/pantallas.svg")
-    return QIcon(str(path)) if path.exists() else QIcon()
+    return _first_icon(
+        "assets/generated/pantallas-256.png",
+        "assets/brand/pantallas.svg",
+    )
 
 
 def tray_icon() -> QIcon:
-    path = resource_path("assets/brand/pantallas-tray.svg")
-    return QIcon(str(path)) if path.exists() else app_icon()
+    return _first_icon(
+        "assets/generated/pantallas-tray-256.png",
+        "assets/brand/pantallas-tray.svg",
+        "assets/generated/pantallas-256.png",
+        "assets/brand/pantallas.svg",
+    )
