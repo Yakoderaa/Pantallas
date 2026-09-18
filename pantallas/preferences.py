@@ -4,6 +4,7 @@ import json
 import sys
 import winreg
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QStandardPaths
 
@@ -11,9 +12,20 @@ from PySide6.QtCore import QStandardPaths
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "Pantallas"
 
+DEFAULTS: dict[str, bool] = {
+    "start_with_windows": False,
+    "start_minimized": True,
+    "close_to_tray": True,
+    "auto_updates": True,
+}
+
 
 def _settings_dir() -> Path:
-    base = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppConfigLocation))
+    base = Path(
+        QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppConfigLocation
+        )
+    )
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -23,35 +35,31 @@ def _prefs_path() -> Path:
 
 
 def load_preferences() -> dict[str, bool]:
-    defaults = {
-        "start_with_windows": False,
-        "start_minimized": True,
-    }
+    prefs = dict(DEFAULTS)
     path = _prefs_path()
     if not path.exists():
-        return defaults
+        return prefs
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(raw, dict):
-            defaults["start_with_windows"] = bool(raw.get("start_with_windows", False))
-            defaults["start_minimized"] = bool(raw.get("start_minimized", True))
+            for key in DEFAULTS:
+                if key in raw:
+                    prefs[key] = bool(raw[key])
     except Exception:
         pass
-    return defaults
+    return prefs
 
 
-def save_preferences(*, start_with_windows: bool, start_minimized: bool) -> None:
+def save_preferences(**changes: Any) -> dict[str, bool]:
+    prefs = load_preferences()
+    for key, value in changes.items():
+        if key in DEFAULTS:
+            prefs[key] = bool(value)
     _prefs_path().write_text(
-        json.dumps(
-            {
-                "start_with_windows": bool(start_with_windows),
-                "start_minimized": bool(start_minimized),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
+        json.dumps(prefs, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    return prefs
 
 
 def _startup_command(start_minimized: bool) -> str:
@@ -65,7 +73,11 @@ def _startup_command(start_minimized: bool) -> str:
     return f'"{interpreter}" "{app_path}"{minimized}'
 
 
-def set_windows_startup(enabled: bool, *, start_minimized: bool) -> tuple[bool, str]:
+def set_windows_startup(
+    enabled: bool,
+    *,
+    start_minimized: bool,
+) -> tuple[bool, str]:
     try:
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
