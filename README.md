@@ -2,14 +2,16 @@
 
 **Pantallas** es una aplicación de escritorio para Windows, escrita en Python, para visualizar y organizar monitores y mantener aplicaciones fijadas a una zona concreta de una pantalla.
 
-## V0.3
+## V0.5
 
 - Detecta todos los monitores activos.
 - Muestra resolución, orientación, coordenadas y monitor principal.
+- La sección **Monitores** integra ahora dos vistas: **Control** y **Distribución**.
 - Permite arrastrar los monitores en un lienzo y aplicar esa distribución a Windows.
+- Permite asignar nombres personalizados a los monitores; esos nombres se usan también en la bandeja y en la interfaz.
 - Permite cambiar entre orientación horizontal, vertical, horizontal invertida y vertical invertida.
 - Control de brillo independiente mediante DDC/CI cuando el monitor lo soporta.
-- El apagado individual ahora desactiva la salida desde Windows y guarda su perfil para poder reactivarla después.
+- El apagado individual verifica si Windows realmente desactivó la salida. Si el controlador la deja activa, Pantallas usa el comando físico DDC/CI como respaldo y guarda el método utilizado para poder encenderla después.
 - Pantallas nunca permite apagar la última pantalla activa.
 - Si se apaga la pantalla donde está abierta la aplicación, Pantallas se mueve antes a otra pantalla activa.
 - Las pantallas apagadas quedan disponibles para volver a encenderlas desde la aplicación o desde la bandeja.
@@ -87,6 +89,8 @@ Cada push nuevo a `main` genera un nuevo build publicable. La aplicación consul
 
 ## Notas sobre encendido y apagado
 
-En V0.3 el botón **Apagar** ya no depende del comando de energía DDC/CI. Pantallas desactiva esa salida en la configuración de Windows y guarda resolución, posición y orientación para poder restaurarla.
+En V0.5 Pantallas prueba primero a retirar la salida del escritorio de Windows y comprueba el resultado. Si el controlador informa éxito pero el monitor sigue activo, restaura la señal normal y usa DDC/CI para apagar físicamente el panel. El método usado queda guardado junto con resolución, posición y orientación.
 
-El control de **brillo** sí sigue usando DDC/CI porque Windows no expone una API universal de brillo para todos los monitores externos.
+Al volver a encender un monitor apagado por DDC/CI, Pantallas intenta primero el comando de energía, luego fuerza un despertar de pantallas desde Windows y vuelve a adquirir un handle DDC/CI nuevo. Esto mejora la compatibilidad con monitores que dejan de responder durante el reposo.
+
+El control de **brillo** sigue usando DDC/CI.
