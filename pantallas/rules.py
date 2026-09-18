@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from .models import MonitorInfo, WindowInfo, WindowRule
+from .monitor_state import reconcile_active_devices
 from .windows_api import enum_monitors, enum_windows, move_window, window_matches
 
 
@@ -132,7 +133,15 @@ class RuleEnforcer(QObject):
             self._emit_status("Sin reglas activas")
             return
 
-        monitors = {monitor.device: monitor for monitor in enum_monitors()}
+        all_monitors = enum_monitors()
+        disabled = reconcile_active_devices(
+            {monitor.device for monitor in all_monitors}
+        )
+        monitors = {
+            monitor.device: monitor
+            for monitor in all_monitors
+            if monitor.device not in disabled
+        }
         windows = enum_windows()
         moved = 0
         matched = 0
