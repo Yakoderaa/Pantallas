@@ -859,7 +859,9 @@ class RulesPage(QWidget):
         current = self.monitor_combo.currentData()
         all_monitors = enum_monitors()
         disabled = reconcile_active_devices({m.device for m in all_monitors})
-        self.monitors = [m for m in all_monitors if m.device not in disabled]
+        self.monitors = sort_monitors(
+            [m for m in all_monitors if m.device not in disabled]
+        )
         self.monitor_combo.clear()
         for monitor in self.monitors:
             self.monitor_combo.addItem(
