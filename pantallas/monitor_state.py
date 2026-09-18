@@ -57,9 +57,9 @@ def reconcile_active_devices(active_devices: set[str]) -> dict[str, dict]:
     for device in list(state):
         profile = state.get(device, {})
         mode = str(profile.get("mode", "windows_disabled"))
-        # A DDC-off monitor intentionally remains present in the Windows topology.
-        # Do not clear that state just because EnumDisplayMonitors still sees it.
-        if device in active_devices and mode != "ddc_off":
+        # DDC power states intentionally remain present in Windows' logical
+        # topology. Keep them marked as off until Pantallas explicitly wakes them.
+        if device in active_devices and not mode.startswith("ddc_"):
             state.pop(device, None)
             changed = True
     if changed:
