@@ -9,3 +9,6 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Generado por tools/generate_icons.py
+assets/generated/
