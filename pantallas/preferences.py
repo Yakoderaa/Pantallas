@@ -17,6 +17,7 @@ DEFAULTS: dict[str, bool] = {
     "start_minimized": True,
     "close_to_tray": True,
     "auto_updates": True,
+    "allow_all_monitors_off": False,
 }
 
 
