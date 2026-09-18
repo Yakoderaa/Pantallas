@@ -2,16 +2,13 @@
 
 **Pantallas** es una aplicación de escritorio para Windows, escrita en Python, para visualizar y organizar monitores y mantener aplicaciones fijadas a una zona concreta de una pantalla.
 
-## V0.6
+## V0.7
 
 - Detecta todos los monitores activos.
 - Muestra resolución, orientación, coordenadas y monitor principal.
-- La sección **Monitores** integra dos vistas: **Control** y **Distribución**.
 - La vista Control muestra también un mapa visible de la distribución actual.
 - Los monitores pueden reordenarse manualmente con **Subir** y **Bajar**; el orden se guarda y se reutiliza en menús y selectores.
-- Permite arrastrar los monitores en un lienzo y aplicar esa distribución a Windows.
 - Permite asignar nombres personalizados a los monitores; esos nombres se usan también en la bandeja y en la interfaz.
-- Permite cambiar entre orientación horizontal, vertical, horizontal invertida y vertical invertida.
 - Control de brillo independiente mediante DDC/CI cuando el monitor lo soporta.
 - El apagado individual verifica si Windows realmente desactivó la salida. Si el controlador la deja activa, Pantallas usa el comando físico DDC/CI como respaldo y guarda el método utilizado para poder encenderla después.
 - Por defecto Pantallas nunca permite apagar la última pantalla activa y muestra un aviso al intentarlo.
@@ -24,7 +21,8 @@
 - Un motor de reglas vuelve a colocar automáticamente las ventanas que se muevan.
 - Puede iniciarse automáticamente con Windows.
 - Puede iniciarse minimizada en la bandeja del sistema.
-- El icono de bandeja tiene menú contextual con accesos rápidos por monitor: abrir/configurar, brillo, apagar o encender.
+- El icono de bandeja tiene menú contextual con accesos rápidos por monitor: abrir Pantallas ahí, brillo, apagar o encender.
+- La bandeja incluye un tic **Bloqueo de posiciones** para pausar o reactivar todas las restricciones de posición de aplicaciones.
 - Busca actualizaciones automáticamente al iniciar y cada 30 minutos mientras está abierta.
 - Incluye el botón **Buscar actualizaciones** dentro de la aplicación.
 - Las actualizaciones se descargan desde GitHub Releases, se validan por SHA-256, cierran Pantallas, se instalan silenciosamente y vuelven a abrir la aplicación.
@@ -48,11 +46,12 @@ Con clic derecho sobre el icono de Pantallas aparecen:
 
 - **Abrir Pantallas**
 - Un submenú por cada monitor activo
-  - Abrir y configurar ahí
+  - Abrir Pantallas ahí
   - Brillo 25/50/75/100 %
   - Apagar monitor
 - Un submenú por cada monitor apagado
   - Encender monitor
+- **Bloqueo de posiciones** (tic global)
 - Iniciar con Windows
 - Iniciar minimizada
 - Buscar actualizaciones
@@ -88,11 +87,11 @@ Cada push nuevo a `main` genera un nuevo build publicable. La aplicación consul
 3. Elegí el monitor de destino.
 4. Indicá X, Y, ancho y alto en porcentajes o usá **Capturar posición actual**.
 5. Guardá la regla.
-6. Mientras **Bloqueo automático** esté activo, Pantallas comprobará la posición y la restaurará cuando cambie.
+6. Mientras **Bloqueo de posiciones** esté activo, Pantallas comprobará la posición y la restaurará cuando cambie.
 
 ## Notas sobre encendido y apagado
 
-En V0.6 Pantallas prueba primero a retirar la salida del escritorio de Windows y comprueba el resultado. Si el controlador informa éxito pero el monitor sigue activo, restaura la señal normal y usa DDC/CI para apagar físicamente el panel. El método usado queda guardado junto con resolución, posición y orientación.
+En V0.7 Pantallas intenta primero un standby DDC/CI reversible. Si el monitor no acepta control de energía por DDC, recién entonces intenta desactivar su salida desde Windows. Los estados DDC standby/suspend/off permanecen marcados como apagados aunque Windows siga conservando el monitor en su topología lógica. El método usado queda guardado junto con resolución, posición y orientación.
 
 Al volver a encender un monitor apagado por DDC/CI, Pantallas restaura primero la señal de Windows, fuerza un despertar, vuelve a adquirir handles DDC/CI nuevos y reintenta varias veces. Los nuevos apagados DDC usan standby (0x02) antes que deep-off (0x04) para conservar la capacidad de despertar. Los monitores guardados por versiones anteriores en deep-off reciben además una renegociación HDMI/DisplayPort. Esto mejora la compatibilidad con monitores que dejan de responder durante el reposo.
 
